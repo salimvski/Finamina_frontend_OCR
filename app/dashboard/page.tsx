@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { Upload, FileText, DollarSign, Clock, CheckCircle, Loader2 } from 'lucide-react';
+import { Upload, FileText, DollarSign, Clock, CheckCircle, Loader2, ArrowDownCircle, Link as LinkIcon } from 'lucide-react';
 
 export default function DashboardPage() {
     const router = useRouter();
@@ -161,6 +162,28 @@ export default function DashboardPage() {
                     </p>
                 </div>
 
+                {/* Navigation Tabs */}
+                <div className="flex gap-4 mb-8 border-b border-gray-200">
+                    <Link
+                        href="/dashboard"
+                        className="px-4 py-3 font-medium text-blue-600 border-b-2 border-blue-600"
+                    >
+                        Invoices
+                    </Link>
+                    <Link
+                        href="/dashboard/transactions"
+                        className="px-4 py-3 font-medium text-gray-600 hover:text-gray-900 border-b-2 border-transparent hover:border-gray-300 transition"
+                    >
+                        Bank Transactions
+                    </Link>
+                    <Link
+                        href="/dashboard/reconciliation"
+                        className="px-4 py-3 font-medium text-gray-600 hover:text-gray-900 border-b-2 border-transparent hover:border-gray-300 transition"
+                    >
+                        Reconciliation History
+                    </Link>
+                </div>
+
                 {/* Stats */}
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
                     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
@@ -256,7 +279,6 @@ export default function DashboardPage() {
                     ) : (
                         <div className="overflow-x-auto">
                             <table className="w-full">
-                                {/* In the table header - add new column */}
                                 <thead className="bg-gray-50 border-b border-gray-100">
                                     <tr>
                                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -276,8 +298,6 @@ export default function DashboardPage() {
                                         </th>
                                     </tr>
                                 </thead>
-
-                                {/* In the table body - add company name cell */}
                                 <tbody className="divide-y divide-gray-100">
                                     {invoices.map((invoice) => (
                                         <tr

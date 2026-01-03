@@ -122,7 +122,7 @@ export default function CashflowForecast() {
             id: inv.id,
             type: 'supplier',
             invoice_number: inv.invoice_number,
-            party_name: inv.supplier?.name || 'Unknown Supplier',
+            party_name: inv.supplier?.[0]?.name || 'Unknown Supplier',
             amount: parseFloat(inv.amount),
             due_date: inv.due_date,
             status: inv.status
@@ -133,7 +133,7 @@ export default function CashflowForecast() {
 
         // Generate chart data (daily cashflow for 90 days)
         const chartData = [];
-        let runningBalance = 0; // Start from current balance
+        let runningBalance = 0; // Start from current balance (you can replace with real balance later)
         
         for (let i = 0; i <= 90; i++) {
             const currentDate = new Date(today.getTime() + i * 24 * 60 * 60 * 1000);
@@ -186,19 +186,6 @@ export default function CashflowForecast() {
         if (daysUntilDue <= 7) return { label: 'CRITICAL', color: 'orange' };
         if (daysUntilDue <= 30) return { label: 'URGENT', color: 'yellow' };
         return { label: 'NORMAL', color: 'gray' };
-    };
-
-    // Format date without timezone issues
-    const formatDate = (dateString: string | null) => {
-        if (!dateString) return 'N/A';
-        
-        // Parse as local date to avoid timezone shifts
-        const [year, month, day] = dateString.split('T')[0].split('-');
-        const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-        
-        if (isNaN(date.getTime())) return 'Invalid date';
-        
-        return date.toLocaleDateString();
     };
 
     if (loading) {
@@ -326,13 +313,14 @@ export default function CashflowForecast() {
                                         borderRadius: '8px',
                                         padding: '12px'
                                     }}
-                                    formatter={(value: number, name: string) => {
+                                    formatter={(value: number | undefined, name: string | undefined) => {
                                         const labels: Record<string, string> = {
                                             balance: 'Balance',
                                             incoming: 'Money In',
                                             outgoing: 'Money Out'
                                         };
-                                        return [`${value.toFixed(0)} SAR`, labels[name] || name];
+                                        const label = labels[name ?? ''] || name || 'Unknown';
+                                        return [`${(value ?? 0).toLocaleString()} SAR`, label];
                                     }}
                                     labelFormatter={(label) => `Day ${label}`}
                                 />

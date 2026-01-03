@@ -63,7 +63,7 @@ export default function CompleteDashboard() {
 
         if (userData) {
             setCompanyId(userData.company_id);
-            setCompanyName(userData.companies?.name || 'My Company');
+            setCompanyName(userData.companies?.[0]?.name || 'My Company');
             await loadAllStats(userData.company_id);
         }
 

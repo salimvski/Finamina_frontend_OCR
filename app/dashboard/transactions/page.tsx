@@ -33,7 +33,7 @@ export default function TransactionsPage() {
 
     if (userData) {
       setCompanyId(userData.company_id);
-      setCompanyName(userData.companies.name);
+      setCompanyName(userData.companies[0]?.name ?? "");
 
       // Get bank accounts for this company
       const { data: accounts } = await supabase

@@ -139,6 +139,7 @@ export default function CustomerInvoices() {
         
         const avgDSO = paidInvs.length > 0
             ? paidInvs.reduce((sum, inv) => {
+                if (!inv.invoice_date || !inv.paid_at) return sum;
                 const invoiceDate = new Date(inv.invoice_date);
                 const paidDate = new Date(inv.paid_at);
                 const days = Math.floor((paidDate.getTime() - invoiceDate.getTime()) / (1000 * 60 * 60 * 24));

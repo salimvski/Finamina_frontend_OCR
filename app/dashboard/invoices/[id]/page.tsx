@@ -154,7 +154,10 @@ export default function InvoiceDetailPage() {
                 <div className="flex justify-between items-center pb-4 border-b border-gray-100">
                   <span className="text-gray-600">Subtotal</span>
                   <span className="text-lg font-semibold text-gray-900">
-                    {parseFloat(invoice.amount - (invoice.tax_amount || 0)).toFixed(2)} {invoice.currency}
+                    {(
+      parseFloat(invoice.amount || '0') - 
+      parseFloat(invoice.tax_amount?.toString() || '0')
+    ).toFixed(2)} {invoice.currency}
                   </span>
                 </div>
 

@@ -93,7 +93,7 @@ export default function CashflowForecast() {
             id: inv.id,
             type: 'customer',
             invoice_number: inv.invoice_number,
-            party_name: inv.customer?.name || 'Unknown Customer',
+            party_name: inv.customer?.[0]?.name || 'Unknown Customer',
             amount: parseFloat(inv.amount),
             due_date: inv.due_date,
             status: inv.status

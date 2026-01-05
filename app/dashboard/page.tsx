@@ -194,7 +194,7 @@ export default function CustomerInvoices() {
             formData.append('data', selectedFile);
             formData.append('company_id', companyId);
 
-            const response = await fetch('http://localhost:5678/webhook/upload-invoice', {
+            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/upload-invoice', {
                 method: 'POST',
                 body: formData
             });

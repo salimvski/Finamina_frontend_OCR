@@ -94,7 +94,7 @@ export default function ReconciliationPage() {
         
         setReconcilingCustomer(true);
         try {
-            const response = await fetch('http://localhost:5678/webhook/lean-reconciliation', {
+            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/lean-reconciliation', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })
@@ -118,7 +118,7 @@ export default function ReconciliationPage() {
         
         setReconcilingSupplier(true);
         try {
-            const response = await fetch('http://localhost:5678/webhook/reconcile-suppliers', {
+            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/reconcile-suppliers', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })

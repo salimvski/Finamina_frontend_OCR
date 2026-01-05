@@ -144,7 +144,7 @@ export default function ProcurementPage() {
 
         setMatching(true);
         try {
-            const response = await fetch('http://localhost:5678/webhook/run-three-way-match', {
+            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/run-three-way-match', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })
@@ -215,7 +215,7 @@ export default function ProcurementPage() {
                 ? 'upload-purchase-order' 
                 : 'upload-delivery-note';
 
-            const response = await fetch(`http://localhost:5678/webhook/${endpoint}`, {
+            const response = await fetch(`http://n8n-production-5a07.up.railway.app/webhook/${endpoint}`, {
                 method: 'POST',
                 body: formData
             });

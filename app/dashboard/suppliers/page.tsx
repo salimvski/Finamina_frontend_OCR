@@ -190,7 +190,7 @@ export default function SupplierInvoices() {
             formData.append('data', selectedFile);
             formData.append('company_id', companyId);
 
-            const response = await fetch('http://localhost:5678/webhook/upload-supplier-invoice', {
+            const response = await fetch('http://n8n-production-5a07.up.railway.appwebhook/upload-supplier-invoice', {
                 method: 'POST',
                 body: formData
             });
@@ -226,7 +226,7 @@ export default function SupplierInvoices() {
 
     const handleRun3WayMatch = async () => {
         try {
-            const response = await fetch('http://localhost:5678/webhook/run-three-way-match', {
+            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/run-three-way-match', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })

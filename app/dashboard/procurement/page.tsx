@@ -8,7 +8,7 @@ import {
     Loader2, Shield, TrendingUp, DollarSign, X
 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 interface UploadModal {
     isOpen: boolean;
@@ -22,6 +22,7 @@ interface UploadModal {
 
 export default function ProcurementPage() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [loading, setLoading] = useState(true);
     const [companyId, setCompanyId] = useState('');
     const [activeTab, setActiveTab] = useState<'overview' | 'pos' | 'deliveries' | 'matches' | 'anomalies'>('overview');
@@ -56,6 +57,23 @@ export default function ProcurementPage() {
     useEffect(() => {
         loadData();
     }, []);
+
+    // Check if we should open upload modal from URL parameter
+    useEffect(() => {
+        const uploadParam = searchParams.get('upload');
+        if ((uploadParam === 'po' || uploadParam === 'dn') && !loading && companyId) {
+            setUploadModal({
+                isOpen: true,
+                type: uploadParam as 'po' | 'dn',
+                uploading: false,
+                fileName: '',
+                stage: 'idle',
+                message: ''
+            });
+            // Clean up URL parameter
+            router.replace('/dashboard/procurement', { scroll: false });
+        }
+    }, [searchParams, loading, companyId, router]);
 
     const loadData = async () => {
         const { data: { user } } = await supabase.auth.getUser();
@@ -144,7 +162,7 @@ export default function ProcurementPage() {
 
         setMatching(true);
         try {
-            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/run-three-way-match', {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/run-three-way-match`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })
@@ -215,7 +233,7 @@ export default function ProcurementPage() {
                 ? 'upload-purchase-order' 
                 : 'upload-delivery-note';
 
-            const response = await fetch(`http://n8n-production-5a07.up.railway.app/webhook/${endpoint}`, {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/${endpoint}`, {
                 method: 'POST',
                 body: formData
             });

@@ -8,7 +8,7 @@ import {
     Send, Download, Calendar
 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 interface CustomerInvoice {
     id: string;
@@ -30,6 +30,7 @@ interface CustomerInvoice {
 
 export default function CustomerInvoices() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState(false);
     const [companyId, setCompanyId] = useState('');
@@ -55,6 +56,16 @@ export default function CustomerInvoices() {
     useEffect(() => {
         loadData();
     }, []);
+
+    // Check if we should open upload modal from URL parameter
+    useEffect(() => {
+        const uploadParam = searchParams.get('upload');
+        if (uploadParam === 'customer' && !loading && companyId) {
+            setShowUploadModal(true);
+            // Clean up URL parameter
+            router.replace('/dashboard', { scroll: false });
+        }
+    }, [searchParams, loading, companyId, router]);
 
     useEffect(() => {
         filterInvoices();
@@ -194,7 +205,7 @@ export default function CustomerInvoices() {
             formData.append('data', selectedFile);
             formData.append('company_id', companyId);
 
-            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/upload-invoice', {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-invoice`, {
                 method: 'POST',
                 body: formData
             });

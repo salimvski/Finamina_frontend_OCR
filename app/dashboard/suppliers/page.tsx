@@ -8,7 +8,7 @@ import {
     Shield, Zap, Package
 } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 
 interface SupplierInvoice {
     id: string;
@@ -35,6 +35,7 @@ interface SupplierInvoice {
 
 export default function SupplierInvoices() {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState(false);
     const [companyId, setCompanyId] = useState('');
@@ -65,6 +66,16 @@ export default function SupplierInvoices() {
     useEffect(() => {
         filterInvoices();
     }, [invoices, searchTerm, statusFilter, matchFilter]);
+
+    // Check if we should open upload modal from URL parameter
+    useEffect(() => {
+        const uploadParam = searchParams.get('upload');
+        if (uploadParam === 'supplier' && !loading && companyId) {
+            setShowUploadModal(true);
+            // Clean up URL parameter
+            router.replace('/dashboard/suppliers', { scroll: false });
+        }
+    }, [searchParams, loading, companyId, router]);
 
     const loadData = async () => {
         const { data: { user } } = await supabase.auth.getUser();
@@ -190,7 +201,7 @@ export default function SupplierInvoices() {
             formData.append('data', selectedFile);
             formData.append('company_id', companyId);
 
-            const response = await fetch('http://n8n-production-5a07.up.railway.appwebhook/upload-supplier-invoice', {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-supplier-invoice`, {
                 method: 'POST',
                 body: formData
             });
@@ -226,7 +237,7 @@ export default function SupplierInvoices() {
 
     const handleRun3WayMatch = async () => {
         try {
-            const response = await fetch('http://n8n-production-5a07.up.railway.app/webhook/run-three-way-match', {
+            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/run-three-way-match`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })

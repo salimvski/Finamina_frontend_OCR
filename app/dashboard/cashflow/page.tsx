@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { ArrowLeft, TrendingUp, TrendingDown, Calendar, AlertTriangle, DollarSign, Clock } from 'lucide-react';
+import { ArrowLeft, TrendingUp, TrendingDown, Calendar, AlertTriangle, DollarSign, Clock, Mail, Zap, Send } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart, PieChart, Pie, Cell } from 'recharts';
 
 interface Payment {
     id: string;
@@ -21,17 +21,17 @@ export default function CashflowForecast() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
     const [companyId, setCompanyId] = useState('');
+    const [selectedDay, setSelectedDay] = useState(45); // Default to day 45
     
     const [forecast, setForecast] = useState({
-        currentBalance: 0,
+        currentCashPosition: 0, // Real current position (AR - AP)
         expectedIn90Days: 0,
         expectedOut90Days: 0,
-        netPosition90Days: 0,
         
         incomingPayments: [] as Payment[],
         outgoingPayments: [] as Payment[],
         
-        criticalIncoming: [] as Payment[], // Due within 7 days
+        criticalIncoming: [] as Payment[], // Due within 7 days AND not overdue
         criticalOutgoing: [] as Payment[],
         
         chartData: [] as Array<{
@@ -40,7 +40,15 @@ export default function CashflowForecast() {
             balance: number;
             incoming: number;
             outgoing: number;
-        }>
+        }>,
+        
+        // Cash collection metrics
+        totalOutstanding: 0,
+        totalCollected: 0,
+        collectionRate: 0,
+        
+        // DSO metrics
+        dso: 0
     });
 
     useEffect(() => {
@@ -70,10 +78,63 @@ export default function CashflowForecast() {
 
     const loadForecast = async (company_id: string) => {
         const today = new Date();
+        today.setHours(0, 0, 0, 0);
         const ninetyDaysFromNow = new Date(today.getTime() + 90 * 24 * 60 * 60 * 1000);
         const sevenDaysFromNow = new Date(today.getTime() + 7 * 24 * 60 * 60 * 1000);
 
-        // Get customer invoices (money coming IN)
+        // Get ALL customer invoices (pending + paid) for calculations
+        const { data: allCustomerInvoices } = await supabase
+            .from('invoices')
+            .select('amount, status, invoice_date, paid_at, due_date')
+            .eq('company_id', company_id);
+
+        // Calculate current cash position: Total Receivables - Total Payables
+        const totalReceivables = (allCustomerInvoices || [])
+            .filter(i => i.status === 'pending')
+            .reduce((sum, i) => sum + parseFloat(i.amount || '0'), 0);
+
+        const { data: allSupplierInvoices } = await supabase
+            .from('supplier_invoices')
+            .select('amount, status')
+            .eq('company_id', company_id);
+
+        const totalPayables = (allSupplierInvoices || [])
+            .filter(i => i.status === 'pending')
+            .reduce((sum, i) => sum + parseFloat(i.amount || '0'), 0);
+
+        const currentCashPosition = totalReceivables - totalPayables;
+
+        // Calculate cash collection metrics
+        const totalOutstanding = totalReceivables;
+        const totalCollected = (allCustomerInvoices || [])
+            .filter(i => i.status === 'paid')
+            .reduce((sum, i) => sum + parseFloat(i.amount || '0'), 0);
+        const totalInvoiced = totalOutstanding + totalCollected;
+        const collectionRate = totalInvoiced > 0 ? (totalCollected / totalInvoiced) * 100 : 0;
+
+        // Calculate DSO (3 months rolling)
+        const threeMonthsAgo = new Date(today);
+        threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+        
+        const invoicesLast3Months = (allCustomerInvoices || [])
+            .filter(i => {
+                const invDate = new Date(i.invoice_date);
+                return invDate >= threeMonthsAgo;
+            });
+
+        const totalRevenue3Months = invoicesLast3Months
+            .reduce((sum, i) => sum + parseFloat(i.amount || '0'), 0);
+
+        // Average receivables = (beginning + ending) / 2
+        const endingReceivables = totalReceivables;
+        const beginningReceivables = endingReceivables; // Simplified - could be improved with historical data
+        const avgReceivables = (beginningReceivables + endingReceivables) / 2;
+
+        const dso = totalRevenue3Months > 0 
+            ? (avgReceivables / totalRevenue3Months) * 90 
+            : 0;
+
+        // Get customer invoices (money coming IN) - only pending and not overdue
         const { data: customerInvoices } = await supabase
             .from('invoices')
             .select(`
@@ -86,6 +147,7 @@ export default function CashflowForecast() {
             `)
             .eq('company_id', company_id)
             .eq('status', 'pending')
+            .gte('due_date', today.toISOString().split('T')[0]) // Only future due dates
             .lte('due_date', ninetyDaysFromNow.toISOString())
             .order('due_date', { ascending: true });
 
@@ -100,7 +162,12 @@ export default function CashflowForecast() {
         }));
 
         const expectedIn = incomingPayments.reduce((sum, p) => sum + p.amount, 0);
-        const criticalIncoming = incomingPayments.filter(p => new Date(p.due_date) <= sevenDaysFromNow);
+        
+        // Critical incoming: due within 7 days AND not overdue (already filtered above)
+        const criticalIncoming = incomingPayments.filter(p => {
+            const dueDate = new Date(p.due_date);
+            return dueDate <= sevenDaysFromNow && dueDate >= today;
+        });
 
         // Get supplier invoices (money going OUT)
         const { data: supplierInvoices } = await supabase
@@ -115,6 +182,7 @@ export default function CashflowForecast() {
             `)
             .eq('company_id', company_id)
             .eq('status', 'pending')
+            .gte('due_date', today.toISOString().split('T')[0]) // Only future due dates
             .lte('due_date', ninetyDaysFromNow.toISOString())
             .order('due_date', { ascending: true });
 
@@ -129,11 +197,14 @@ export default function CashflowForecast() {
         }));
 
         const expectedOut = outgoingPayments.reduce((sum, p) => sum + p.amount, 0);
-        const criticalOutgoing = outgoingPayments.filter(p => new Date(p.due_date) <= sevenDaysFromNow);
+        const criticalOutgoing = outgoingPayments.filter(p => {
+            const dueDate = new Date(p.due_date);
+            return dueDate <= sevenDaysFromNow && dueDate >= today;
+        });
 
-        // Generate chart data (daily cashflow for 90 days)
+        // Generate chart data (daily cashflow for 90 days) starting from current position
         const chartData = [];
-        let runningBalance = 0; // Start from current balance (you can replace with real balance later)
+        let runningBalance = currentCashPosition; // Start from REAL current balance
         
         for (let i = 0; i <= 90; i++) {
             const currentDate = new Date(today.getTime() + i * 24 * 60 * 60 * 1000);
@@ -162,20 +233,24 @@ export default function CashflowForecast() {
         }
 
         setForecast({
-            currentBalance: 0,
+            currentCashPosition,
             expectedIn90Days: expectedIn,
             expectedOut90Days: expectedOut,
-            netPosition90Days: expectedIn - expectedOut,
             incomingPayments,
             outgoingPayments,
             criticalIncoming,
             criticalOutgoing,
-            chartData
+            chartData,
+            totalOutstanding,
+            totalCollected,
+            collectionRate,
+            dso: Math.round(dso)
         });
     };
 
     const getDaysUntilDue = (dueDate: string) => {
         const today = new Date();
+        today.setHours(0, 0, 0, 0);
         const due = new Date(dueDate);
         const diff = due.getTime() - today.getTime();
         return Math.ceil(diff / (1000 * 60 * 60 * 24));
@@ -186,6 +261,27 @@ export default function CashflowForecast() {
         if (daysUntilDue <= 7) return { label: 'CRITICAL', color: 'orange' };
         if (daysUntilDue <= 30) return { label: 'URGENT', color: 'yellow' };
         return { label: 'NORMAL', color: 'gray' };
+    };
+
+    // Get cash position for selected day
+    const selectedDayData = forecast.chartData.find(d => d.day === selectedDay) || forecast.chartData[0];
+    const selectedDayBalance = selectedDayData?.balance || forecast.currentCashPosition;
+    const selectedDayChange = selectedDayBalance - forecast.currentCashPosition;
+
+    // Prepare data for circular chart (simplified visualization)
+    const circularChartData = [
+        { name: 'Incoming', value: forecast.expectedIn90Days, color: '#10b981' },
+        { name: 'Outgoing', value: forecast.expectedOut90Days, color: '#ef4444' },
+    ];
+
+    const handleSendReminders = async (invoiceIds: string[]) => {
+        // TODO: Implement reminder sending via n8n
+        alert(`Sending reminders for ${invoiceIds.length} invoices...`);
+    };
+
+    const handleDynamicDiscounting = async (invoiceId: string) => {
+        // TODO: Implement dynamic discounting
+        alert('Dynamic discounting feature coming soon...');
     };
 
     if (loading) {
@@ -209,80 +305,164 @@ export default function CashflowForecast() {
                             <ArrowLeft className="w-5 h-5 text-gray-600" />
                         </Link>
                         <div>
-                            <h1 className="text-3xl font-bold text-gray-900">90-Day Cashflow Forecast</h1>
-                            <p className="text-gray-600 mt-1">Complete view of incoming and outgoing payments</p>
+                            <h1 className="text-3xl font-bold text-gray-900">Cash Flow Insights</h1>
+                            <p className="text-gray-600 mt-1">Dynamic cash position and 90-day projection</p>
                         </div>
                     </div>
                 </div>
             </div>
 
             <div className="max-w-7xl mx-auto px-8 py-8">
-                {/* Summary Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                    <div className="bg-white rounded-xl shadow-sm border-2 border-gray-200 p-6">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-blue-100 rounded-lg">
-                                <DollarSign className="w-6 h-6 text-blue-600" />
-                            </div>
-                            <p className="text-sm font-medium text-gray-600">Current Balance</p>
-                        </div>
-                        <p className="text-3xl font-bold text-gray-900 mb-1">
-                            {forecast.currentBalance.toFixed(0)}
-                        </p>
-                        <p className="text-sm text-gray-500">SAR</p>
+                {/* Dynamic Cash Position with Slider */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 mb-8">
+                    <div className="mb-6">
+                        <h2 className="text-2xl font-bold text-gray-900 mb-2">Dynamic Cash Position</h2>
+                        <p className="text-gray-600">Cash flow projection over 90 days</p>
                     </div>
 
-                    <div className="bg-white rounded-xl shadow-sm border-2 border-green-200 p-6">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-green-100 rounded-lg">
-                                <TrendingUp className="w-6 h-6 text-green-600" />
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-center">
+                        {/* Circular Chart */}
+                        <div className="lg:col-span-1 flex flex-col items-center">
+                            <div className="relative w-64 h-64 mb-4">
+                                <PieChart width={256} height={256}>
+                                    <Pie
+                                        data={circularChartData}
+                                        cx={128}
+                                        cy={128}
+                                        innerRadius={80}
+                                        outerRadius={120}
+                                        startAngle={90}
+                                        endAngle={-270}
+                                        dataKey="value"
+                                    >
+                                        {circularChartData.map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={entry.color} />
+                                        ))}
+                                    </Pie>
+                                </PieChart>
+                                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                    <p className="text-xs text-gray-600 mb-1">Cash Position at D+{selectedDay}</p>
+                                    <p className={`text-3xl font-bold ${selectedDayBalance >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                        {selectedDayBalance >= 0 ? '+' : ''}{selectedDayBalance.toLocaleString('en-US')}
+                                    </p>
+                                    <p className="text-sm text-gray-500">SAR</p>
+                                    {selectedDayChange !== 0 && (
+                                        <p className={`text-xs mt-1 ${selectedDayChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                            {selectedDayChange >= 0 ? '+' : ''}{selectedDayChange.toLocaleString('en-US')} vs Today
+                                        </p>
+                                    )}
+                                </div>
                             </div>
-                            <p className="text-sm font-medium text-gray-600">Expected In (90d)</p>
                         </div>
-                        <p className="text-3xl font-bold text-green-600 mb-1">
-                            +{forecast.expectedIn90Days.toFixed(0)}
-                        </p>
-                        <p className="text-sm text-gray-500">{forecast.incomingPayments.length} customer invoices</p>
-                    </div>
 
-                    <div className="bg-white rounded-xl shadow-sm border-2 border-red-200 p-6">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-red-100 rounded-lg">
-                                <TrendingDown className="w-6 h-6 text-red-600" />
+                        {/* Slider */}
+                        <div className="lg:col-span-2">
+                            <div className="mb-4">
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Projection Horizon: Day {selectedDay} / 90
+                                </label>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="90"
+                                    value={selectedDay}
+                                    onChange={(e) => setSelectedDay(parseInt(e.target.value))}
+                                    className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
+                                />
+                                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                                    <span>Today</span>
+                                    <span>10</span>
+                                    <span>30</span>
+                                    <span>60</span>
+                                    <span>75</span>
+                                    <span>90 days</span>
+                                </div>
                             </div>
-                            <p className="text-sm font-medium text-gray-600">Expected Out (90d)</p>
-                        </div>
-                        <p className="text-3xl font-bold text-red-600 mb-1">
-                            -{forecast.expectedOut90Days.toFixed(0)}
-                        </p>
-                        <p className="text-sm text-gray-500">{forecast.outgoingPayments.length} supplier invoices</p>
-                    </div>
-
-                    <div className={`bg-white rounded-xl shadow-sm border-2 ${
-                        forecast.netPosition90Days >= 0 ? 'border-blue-200' : 'border-orange-200'
-                    } p-6`}>
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className={`p-2 ${
-                                forecast.netPosition90Days >= 0 ? 'bg-blue-100' : 'bg-orange-100'
-                            } rounded-lg`}>
-                                <Calendar className={`w-6 h-6 ${
-                                    forecast.netPosition90Days >= 0 ? 'text-blue-600' : 'text-orange-600'
-                                }`} />
+                            <div className="bg-gray-50 rounded-lg p-4">
+                                <div className="grid grid-cols-2 gap-4 text-sm">
+                                    <div>
+                                        <p className="text-gray-600">Expected Incoming</p>
+                                        <p className="text-lg font-bold text-green-600">
+                                            +{forecast.expectedIn90Days.toLocaleString('en-US')} SAR
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <p className="text-gray-600">Expected Outgoing</p>
+                                        <p className="text-lg font-bold text-red-600">
+                                            -{forecast.expectedOut90Days.toLocaleString('en-US')} SAR
+                                        </p>
+                                    </div>
+                                </div>
                             </div>
-                            <p className="text-sm font-medium text-gray-600">Net Position (90d)</p>
                         </div>
-                        <p className={`text-3xl font-bold mb-1 ${
-                            forecast.netPosition90Days >= 0 ? 'text-blue-600' : 'text-orange-600'
-                        }`}>
-                            {forecast.netPosition90Days >= 0 ? '+' : ''}{forecast.netPosition90Days.toFixed(0)}
-                        </p>
-                        <p className="text-sm text-gray-500">
-                            {forecast.netPosition90Days >= 0 ? '✓ Positive flow' : '⚠ Deficit expected'}
-                        </p>
                     </div>
                 </div>
 
-                {/* Cashflow Chart */}
+                {/* Cash Collection Gauge & DSO */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                    {/* Cash Collection Gauge */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                        <h3 className="text-lg font-bold text-gray-900 mb-4">Cash Collection</h3>
+                        <div className="flex items-center justify-center mb-4">
+                            <div className="relative w-48 h-48">
+                                <svg className="transform -rotate-90" width="192" height="192">
+                                    <circle
+                                        cx="96"
+                                        cy="96"
+                                        r="80"
+                                        stroke="#e5e7eb"
+                                        strokeWidth="16"
+                                        fill="none"
+                                    />
+                                    <circle
+                                        cx="96"
+                                        cy="96"
+                                        r="80"
+                                        stroke="#10b981"
+                                        strokeWidth="16"
+                                        fill="none"
+                                        strokeDasharray={`${2 * Math.PI * 80}`}
+                                        strokeDashoffset={`${2 * Math.PI * 80 * (1 - forecast.collectionRate / 100)}`}
+                                        strokeLinecap="round"
+                                    />
+                                </svg>
+                                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                    <p className="text-4xl font-bold text-gray-900">{forecast.collectionRate.toFixed(0)}%</p>
+                                    <p className="text-sm text-gray-600">Collection Rate</p>
+                                </div>
+                            </div>
+                        </div>
+                        <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                                <span className="text-gray-600">Total Outstanding:</span>
+                                <span className="font-semibold">{forecast.totalOutstanding.toLocaleString('en-US')} SAR</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-gray-600">Total Collected:</span>
+                                <span className="font-semibold text-green-600">{forecast.totalCollected.toLocaleString('en-US')} SAR</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* DSO */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                        <h3 className="text-lg font-bold text-gray-900 mb-4">Days Sales Outstanding (DSO)</h3>
+                        <div className="flex items-center justify-center mb-4">
+                            <div className="text-center">
+                                <p className="text-5xl font-bold text-blue-600 mb-2">{forecast.dso}</p>
+                                <p className="text-lg text-gray-600">Days</p>
+                            </div>
+                        </div>
+                        <div className="bg-blue-50 rounded-lg p-4">
+                            <p className="text-sm text-gray-700">
+                                Calculated on a <strong>3-month rolling basis</strong>. 
+                                Lower is better - indicates faster collection of receivables.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 90-Day Cash Flow Chart */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
                     <h2 className="text-xl font-bold text-gray-900 mb-4">90-Day Cash Flow Projection</h2>
                     <div className="h-80">
@@ -315,7 +495,7 @@ export default function CashflowForecast() {
                                     }}
                                     formatter={(value: number | undefined, name: string | undefined) => {
                                         const labels: Record<string, string> = {
-                                            balance: 'Balance',
+                                            balance: 'Net Balance',
                                             incoming: 'Money In',
                                             outgoing: 'Money Out'
                                         };
@@ -323,19 +503,6 @@ export default function CashflowForecast() {
                                         return [`${(value ?? 0).toLocaleString()} SAR`, label];
                                     }}
                                     labelFormatter={(label) => `Day ${label}`}
-                                />
-                                <Legend 
-                                    verticalAlign="top" 
-                                    height={36}
-                                    iconType="line"
-                                    formatter={(value) => {
-                                        const labels: Record<string, string> = {
-                                            balance: 'Net Balance',
-                                            incoming: 'Incoming',
-                                            outgoing: 'Outgoing'
-                                        };
-                                        return labels[value] || value;
-                                    }}
                                 />
                                 <Area 
                                     type="monotone" 
@@ -366,15 +533,15 @@ export default function CashflowForecast() {
                     <div className="mt-4 flex items-center justify-center gap-8 text-sm">
                         <div className="flex items-center gap-2">
                             <div className="w-8 h-0.5 bg-blue-500"></div>
-                            <span className="text-gray-600">Net Balance (solid line)</span>
+                            <span className="text-gray-600">Net Balance</span>
                         </div>
                         <div className="flex items-center gap-2">
                             <div className="w-8 h-0.5 bg-green-500 border-dashed border-t-2 border-green-500"></div>
-                            <span className="text-gray-600">Money In (dashed)</span>
+                            <span className="text-gray-600">Money In</span>
                         </div>
                         <div className="flex items-center gap-2">
                             <div className="w-8 h-0.5 bg-red-500 border-dashed border-t-2 border-red-500"></div>
-                            <span className="text-gray-600">Money Out (dashed)</span>
+                            <span className="text-gray-600">Money Out</span>
                         </div>
                     </div>
                 </div>
@@ -447,7 +614,7 @@ export default function CashflowForecast() {
                 )}
 
                 {/* Payment Schedule Tables */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
                     {/* Incoming Payments (A/R) */}
                     <div className="bg-white rounded-xl shadow-sm border border-gray-200">
                         <div className="px-6 py-4 border-b border-gray-200 bg-green-50">
@@ -571,35 +738,93 @@ export default function CashflowForecast() {
                     </div>
                 </div>
 
-                {/* Recommendations */}
+                {/* Smart Recommendations with CTAs */}
                 <div className="mt-8 bg-blue-50 border-2 border-blue-200 rounded-xl p-6">
-                    <h3 className="text-lg font-bold text-blue-900 mb-3 flex items-center gap-2">
+                    <h3 className="text-lg font-bold text-blue-900 mb-4 flex items-center gap-2">
                         <span>💡</span> Smart Recommendations
                     </h3>
-                    <ul className="space-y-2 text-sm text-blue-800">
-                        {forecast.netPosition90Days < 0 && (
-                            <li className="flex items-start gap-2">
-                                <span className="text-blue-600 mt-0.5">•</span>
-                                <span>You have a negative cash position of {Math.abs(forecast.netPosition90Days).toFixed(0)} SAR in the next 90 days. Consider securing a line of credit or delaying non-critical supplier payments.</span>
-                            </li>
+                    <div className="space-y-4">
+                        {forecast.currentCashPosition < 0 && (
+                            <div className="bg-white rounded-lg p-4 border border-blue-200">
+                                <p className="text-sm text-blue-900 mb-3">
+                                    <strong>Negative cash position:</strong> You have a deficit of {Math.abs(forecast.currentCashPosition).toLocaleString('en-US')} SAR. 
+                                    Consider taking action to improve cash flow.
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                    {forecast.criticalIncoming.length > 0 && (
+                                        <button
+                                            onClick={() => handleSendReminders(forecast.criticalIncoming.map(p => p.id))}
+                                            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm font-semibold"
+                                        >
+                                            <Mail className="w-4 h-4" />
+                                            Send Reminders ({forecast.criticalIncoming.length})
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => router.push('/dashboard')}
+                                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-semibold"
+                                    >
+                                        <Zap className="w-4 h-4" />
+                                        Review Pending Receivables
+                                    </button>
+                                </div>
+                            </div>
                         )}
-                        {forecast.criticalOutgoing.length > 0 && (
-                            <li className="flex items-start gap-2">
-                                <span className="text-blue-600 mt-0.5">•</span>
-                                <span>Priority action needed: {forecast.criticalOutgoing.length} supplier payment{forecast.criticalOutgoing.length > 1 ? 's' : ''} due within 7 days totaling {forecast.criticalOutgoing.reduce((sum, p) => sum + p.amount, 0).toFixed(0)} SAR.</span>
-                            </li>
-                        )}
+                        
                         {forecast.criticalIncoming.length > 0 && (
-                            <li className="flex items-start gap-2">
-                                <span className="text-blue-600 mt-0.5">•</span>
-                                <span>Follow up with {forecast.criticalIncoming.length} customer{forecast.criticalIncoming.length > 1 ? 's' : ''} whose payments are due soon - this will bring in {forecast.criticalIncoming.reduce((sum, p) => sum + p.amount, 0).toFixed(0)} SAR.</span>
-                            </li>
+                            <div className="bg-white rounded-lg p-4 border border-blue-200">
+                                <p className="text-sm text-blue-900 mb-3">
+                                    <strong>Follow up with {forecast.criticalIncoming.length} customer{forecast.criticalIncoming.length > 1 ? 's' : ''}</strong> whose payments are due soon - 
+                                    this will bring in {forecast.criticalIncoming.reduce((sum, p) => sum + p.amount, 0).toFixed(0)} SAR.
+                                </p>
+                                <div className="flex flex-wrap gap-2">
+                                    <button
+                                        onClick={() => handleSendReminders(forecast.criticalIncoming.map(p => p.id))}
+                                        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition text-sm font-semibold"
+                                    >
+                                        <Send className="w-4 h-4" />
+                                        Send Payment Reminders
+                                    </button>
+                                    <button
+                                        onClick={() => handleDynamicDiscounting(forecast.criticalIncoming[0]?.id || '')}
+                                        className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition text-sm font-semibold"
+                                    >
+                                        <DollarSign className="w-4 h-4" />
+                                        Offer Early Payment Discount
+                                    </button>
+                                </div>
+                            </div>
                         )}
-                        <li className="flex items-start gap-2">
-                            <span className="text-blue-600 mt-0.5">•</span>
-                            <span>Review procurement anomalies to prevent overpaying suppliers and improve your cash position.</span>
-                        </li>
-                    </ul>
+
+                        {forecast.criticalOutgoing.length > 0 && (
+                            <div className="bg-white rounded-lg p-4 border border-blue-200">
+                                <p className="text-sm text-blue-900 mb-3">
+                                    <strong>Priority action needed:</strong> {forecast.criticalOutgoing.length} supplier payment{forecast.criticalOutgoing.length > 1 ? 's' : ''} 
+                                    due within 7 days totaling {forecast.criticalOutgoing.reduce((sum, p) => sum + p.amount, 0).toFixed(0)} SAR.
+                                </p>
+                                <button
+                                    onClick={() => router.push('/dashboard/suppliers')}
+                                    className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition text-sm font-semibold"
+                                >
+                                    <AlertTriangle className="w-4 h-4" />
+                                    Review Supplier Payments
+                                </button>
+                            </div>
+                        )}
+
+                        <div className="bg-white rounded-lg p-4 border border-blue-200">
+                            <p className="text-sm text-blue-900 mb-3">
+                                Review procurement anomalies to prevent overpaying suppliers and improve your cash position.
+                            </p>
+                            <button
+                                onClick={() => router.push('/dashboard/procurement')}
+                                className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition text-sm font-semibold"
+                            >
+                                <Zap className="w-4 h-4" />
+                                Review Procurement Anomalies
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

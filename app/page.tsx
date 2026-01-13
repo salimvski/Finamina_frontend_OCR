@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from 'recharts';
 
 export default function CompleteDashboard() {
     const router = useRouter();
@@ -44,6 +45,15 @@ export default function CompleteDashboard() {
         netCashPosition: 0
     });
 
+    const [cashflowData, setCashflowData] = useState<Array<{
+        date: string;
+        day: number;
+        balance: number;
+        incoming: number;
+        outgoing: number;
+    }>>([]);
+    const [currentCashPosition, setCurrentCashPosition] = useState(0);
+
     useEffect(() => {
         loadData();
     }, []);
@@ -64,7 +74,10 @@ export default function CompleteDashboard() {
         if (userData) {
             setCompanyId(userData.company_id);
             setCompanyName(userData.companies?.[0]?.name || 'My Company');
-            await loadAllStats(userData.company_id);
+            await Promise.all([
+                loadAllStats(userData.company_id),
+                loadCashflowData(userData.company_id)
+            ]);
         }
 
         setLoading(false);
@@ -165,6 +178,68 @@ export default function CompleteDashboard() {
         });
     };
 
+    const loadCashflowData = async (company_id: string) => {
+        const today = new Date();
+        const ninetyDaysFromNow = new Date(today.getTime() + 90 * 24 * 60 * 60 * 1000);
+
+        // Get customer invoices (money coming IN)
+        const { data: customerInvoices } = await supabase
+            .from('invoices')
+            .select('amount, due_date, status')
+            .eq('company_id', company_id)
+            .eq('status', 'pending')
+            .lte('due_date', ninetyDaysFromNow.toISOString());
+
+        // Get supplier invoices (money going OUT)
+        const { data: supplierInvoices } = await supabase
+            .from('supplier_invoices')
+            .select('amount, due_date, status')
+            .eq('company_id', company_id)
+            .eq('status', 'pending')
+            .lte('due_date', ninetyDaysFromNow.toISOString());
+
+        // Calculate current net position from pending invoices
+        const totalReceivables = (customerInvoices || [])
+            .reduce((sum, i) => sum + parseFloat(i.amount || '0'), 0);
+        const totalPayables = (supplierInvoices || [])
+            .reduce((sum, i) => sum + parseFloat(i.amount || '0'), 0);
+        const currentNetPosition = totalReceivables - totalPayables;
+        
+        setCurrentCashPosition(currentNetPosition);
+
+        // Generate chart data (daily cashflow for 90 days)
+        const chartData = [];
+        let runningBalance = currentNetPosition; // Start from current net position
+        
+        for (let i = 0; i <= 90; i++) {
+            const currentDate = new Date(today.getTime() + i * 24 * 60 * 60 * 1000);
+            const dateStr = currentDate.toISOString().split('T')[0];
+            
+            // Calculate incoming for this day
+            const dayIncoming = (customerInvoices || [])
+                .filter(inv => inv.due_date && inv.due_date.split('T')[0] === dateStr)
+                .reduce((sum, inv) => sum + parseFloat(inv.amount || '0'), 0);
+            
+            // Calculate outgoing for this day
+            const dayOutgoing = (supplierInvoices || [])
+                .filter(inv => inv.due_date && inv.due_date.split('T')[0] === dateStr)
+                .reduce((sum, inv) => sum + parseFloat(inv.amount || '0'), 0);
+            
+            // Update running balance
+            runningBalance += dayIncoming - dayOutgoing;
+            
+            chartData.push({
+                date: dateStr,
+                day: i,
+                balance: Math.round(runningBalance),
+                incoming: Math.round(dayIncoming),
+                outgoing: Math.round(dayOutgoing)
+            });
+        }
+
+        setCashflowData(chartData);
+    };
+
     if (loading) {
         return (
             <div className="flex items-center justify-center min-h-screen bg-gray-50">
@@ -202,143 +277,161 @@ export default function CompleteDashboard() {
                 {/* Financial Overview Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
                     {/* Money Coming In (A/R) */}
-                    <div className="bg-gradient-to-br from-green-500 to-emerald-600 rounded-xl p-6 text-white shadow-lg">
-                        <div className="flex items-start justify-between mb-4">
-                            <TrendingUp className="w-12 h-12 opacity-80" />
-                            <span className="px-3 py-1 bg-white bg-opacity-20 rounded-full text-xs font-semibold">
-                                Money In
-                            </span>
-                        </div>
-                        <p className="text-sm opacity-90 mb-2">Total Receivables (A/R)</p>
-                        <p className="text-4xl font-bold mb-1">
-                            {stats.totalReceivables.toFixed(0)}
-                        </p>
-                        <p className="text-sm opacity-90">SAR</p>
-                        <div className="mt-4 pt-4 border-t border-white border-opacity-20">
-                            <div className="flex justify-between text-sm">
-                                <span className="opacity-90">{stats.pendingCustomerInvoices} pending</span>
-                                <span className="opacity-90">DSO: {stats.averageDSO}d</span>
+                    <div className="relative bg-gradient-to-br from-green-500 via-emerald-500 to-green-600 rounded-2xl p-8 text-white shadow-xl hover:shadow-2xl transition-all duration-300 overflow-hidden group">
+                        {/* Decorative background pattern */}
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16"></div>
+                        <div className="absolute bottom-0 left-0 w-24 h-24 bg-white opacity-5 rounded-full -ml-12 -mb-12"></div>
+                        
+                        <div className="relative z-10">
+                            <div className="flex items-start justify-between mb-6">
+                                <div className="p-4 bg-white bg-opacity-30 rounded-2xl backdrop-blur-sm group-hover:bg-opacity-40 transition-all">
+                                    <TrendingUp className="w-8 h-8 text-green-700" />
+                                </div>
+                                <span className="px-4 py-1.5 bg-white bg-opacity-30 backdrop-blur-sm rounded-full text-xs font-bold uppercase tracking-wide text-green-900">
+                                    Money In
+                                </span>
+                            </div>
+                            
+                            <div className="mb-6">
+                                <p className="text-sm font-medium opacity-90 mb-3 tracking-wide text-white">Total Receivables (A/R)</p>
+                                <div className="flex items-baseline gap-2">
+                                    <p className="text-5xl font-extrabold leading-none text-white">
+                                        {stats.totalReceivables.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                                    </p>
+                                    <p className="text-lg font-semibold opacity-80 text-white">SAR</p>
+                                </div>
+                            </div>
+                            
+                            <div className="pt-6 border-t border-white border-opacity-30">
+                                <div className="flex justify-between items-center">
+                                    <div className="flex items-center gap-2">
+                                        <Clock className="w-4 h-4 opacity-80 text-white" />
+                                        <span className="text-sm font-medium text-white">{stats.pendingCustomerInvoices} pending</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-sm font-medium opacity-80 text-white">DSO:</span>
+                                        <span className="text-sm font-bold text-white">{stats.averageDSO}d</span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     {/* Money Going Out (A/P) */}
-                    <div className="bg-gradient-to-br from-red-500 to-rose-600 rounded-xl p-6 text-white shadow-lg">
-                        <div className="flex items-start justify-between mb-4">
-                            <TrendingDown className="w-12 h-12 opacity-80" />
-                            <span className="px-3 py-1 bg-white bg-opacity-20 rounded-full text-xs font-semibold">
-                                Money Out
-                            </span>
-                        </div>
-                        <p className="text-sm opacity-90 mb-2">Total Payables (A/P)</p>
-                        <p className="text-4xl font-bold mb-1">
-                            {stats.totalPayables.toFixed(0)}
-                        </p>
-                        <p className="text-sm opacity-90">SAR</p>
-                        <div className="mt-4 pt-4 border-t border-white border-opacity-20">
-                            <div className="flex justify-between text-sm">
-                                <span className="opacity-90">{stats.pendingSupplierInvoices} pending</span>
-                                <span className="opacity-90">{stats.anomaliesDetected} alerts</span>
+                    <div className="relative bg-gradient-to-br from-red-500 via-rose-500 to-red-600 rounded-2xl p-8 text-white shadow-xl hover:shadow-2xl transition-all duration-300 overflow-hidden group">
+                        {/* Decorative background pattern */}
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16"></div>
+                        <div className="absolute bottom-0 left-0 w-24 h-24 bg-white opacity-5 rounded-full -ml-12 -mb-12"></div>
+                        
+                        <div className="relative z-10">
+                            <div className="flex items-start justify-between mb-6">
+                                <div className="p-4 bg-white bg-opacity-30 rounded-2xl backdrop-blur-sm group-hover:bg-opacity-40 transition-all">
+                                    <TrendingDown className="w-8 h-8 text-red-700" />
+                                </div>
+                                <span className="px-4 py-1.5 bg-white bg-opacity-30 backdrop-blur-sm rounded-full text-xs font-bold uppercase tracking-wide text-red-900">
+                                    Money Out
+                                </span>
+                            </div>
+                            
+                            <div className="mb-6">
+                                <p className="text-sm font-medium opacity-90 mb-3 tracking-wide text-white">Total Payables (A/P)</p>
+                                <div className="flex items-baseline gap-2">
+                                    <p className="text-5xl font-extrabold leading-none text-white">
+                                        {stats.totalPayables.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                                    </p>
+                                    <p className="text-lg font-semibold opacity-80 text-white">SAR</p>
+                                </div>
+                            </div>
+                            
+                            <div className="pt-6 border-t border-white border-opacity-30">
+                                <div className="flex justify-between items-center">
+                                    <div className="flex items-center gap-2">
+                                        <Clock className="w-4 h-4 opacity-80 text-white" />
+                                        <span className="text-sm font-medium text-white">{stats.pendingSupplierInvoices} pending</span>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        {stats.anomaliesDetected > 0 ? (
+                                            <>
+                                                <AlertTriangle className="w-4 h-4 opacity-80 text-white" />
+                                                <span className="text-sm font-bold text-white">{stats.anomaliesDetected} alerts</span>
+                                            </>
+                                        ) : (
+                                            <span className="text-sm font-medium opacity-80 text-white">No alerts</span>
+                                        )}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     {/* Net Position */}
-                    <div className={`bg-gradient-to-br ${
+                    <div className={`relative bg-gradient-to-br ${
                         stats.netCashPosition >= 0 
-                            ? 'from-blue-500 to-indigo-600' 
-                            : 'from-orange-500 to-amber-600'
-                    } rounded-xl p-6 text-white shadow-lg`}>
-                        <div className="flex items-start justify-between mb-4">
-                            <DollarSign className="w-12 h-12 opacity-80" />
-                            <span className="px-3 py-1 bg-white bg-opacity-20 rounded-full text-xs font-semibold">
-                                Net Position
-                            </span>
-                        </div>
-                        <p className="text-sm opacity-90 mb-2">Cash Flow Balance</p>
-                        <p className="text-4xl font-bold mb-1">
-                            {stats.netCashPosition >= 0 ? '+' : ''}{stats.netCashPosition.toFixed(0)}
-                        </p>
-                        <p className="text-sm opacity-90">SAR</p>
-                        <div className="mt-4 pt-4 border-t border-white border-opacity-20">
-                            <p className="text-sm opacity-90">
-                                {stats.netCashPosition >= 0 
-                                    ? '✓ Healthy cash position' 
-                                    : '⚠ Negative cash flow'}
-                            </p>
+                            ? 'from-blue-500 via-indigo-500 to-blue-600' 
+                            : 'from-orange-500 via-amber-500 to-orange-600'
+                    } rounded-2xl p-8 text-white shadow-xl hover:shadow-2xl transition-all duration-300 overflow-hidden group`}>
+                        {/* Decorative background pattern */}
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-white opacity-10 rounded-full -mr-16 -mt-16"></div>
+                        <div className="absolute bottom-0 left-0 w-24 h-24 bg-white opacity-5 rounded-full -ml-12 -mb-12"></div>
+                        
+                        <div className="relative z-10">
+                            <div className="flex items-start justify-between mb-6">
+                                <div className="p-4 bg-white bg-opacity-30 rounded-2xl backdrop-blur-sm group-hover:bg-opacity-40 transition-all">
+                                    <DollarSign className={`w-8 h-8 ${
+                                        stats.netCashPosition >= 0 ? 'text-blue-700' : 'text-orange-700'
+                                    }`} />
+                                </div>
+                                <span className={`px-4 py-1.5 bg-white bg-opacity-30 backdrop-blur-sm rounded-full text-xs font-bold uppercase tracking-wide ${
+                                    stats.netCashPosition >= 0 ? 'text-blue-900' : 'text-orange-900'
+                                }`}>
+                                    Net Position
+                                </span>
+                            </div>
+                            
+                            <div className="mb-6">
+                                <p className="text-sm font-medium opacity-90 mb-3 tracking-wide text-white">Cash Flow Balance</p>
+                                <div className="flex items-baseline gap-2">
+                                    <p className="text-5xl font-extrabold leading-none text-white">
+                                        {stats.netCashPosition >= 0 ? '+' : ''}{Math.abs(stats.netCashPosition).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+                                    </p>
+                                    <p className="text-lg font-semibold opacity-80 text-white">SAR</p>
+                                </div>
+                            </div>
+                            
+                            <div className="pt-6 border-t border-white border-opacity-30">
+                                <div className="flex items-center gap-2">
+                                    {stats.netCashPosition >= 0 ? (
+                                        <>
+                                            <CheckCircle className="w-5 h-5 text-white" />
+                                            <span className="text-sm font-semibold text-white">Healthy cash position</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <AlertTriangle className="w-5 h-5 text-white" />
+                                            <span className="text-sm font-semibold text-white">Negative cash flow</span>
+                                        </>
+                                    )}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
 
-                {/* Quick Actions */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
-                    <h2 className="text-xl font-bold text-gray-900 mb-4">Quick Actions</h2>
-                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-                        <Link 
-                            href="/dashboard"
-                            className="flex flex-col items-center justify-center p-4 bg-green-50 border-2 border-green-200 rounded-lg hover:bg-green-100 transition group"
-                        >
-                            <Upload className="w-8 h-8 text-green-600 mb-2 group-hover:scale-110 transition" />
-                            <p className="text-sm font-semibold text-gray-900 text-center">Upload Customer Invoice</p>
-                            <p className="text-xs text-gray-600 mt-1">A/R</p>
-                        </Link>
-
-                        <Link 
-                            href="/dashboard/suppliers"
-                            className="flex flex-col items-center justify-center p-4 bg-red-50 border-2 border-red-200 rounded-lg hover:bg-red-100 transition group"
-                        >
-                            <FileText className="w-8 h-8 text-red-600 mb-2 group-hover:scale-110 transition" />
-                            <p className="text-sm font-semibold text-gray-900 text-center">Upload Supplier Invoice</p>
-                            <p className="text-xs text-gray-600 mt-1">A/P</p>
-                        </Link>
-
-                        <Link 
-                            href="/dashboard/procurement"
-                            className="flex flex-col items-center justify-center p-4 bg-purple-50 border-2 border-purple-200 rounded-lg hover:bg-purple-100 transition group"
-                        >
-                            <Package className="w-8 h-8 text-purple-600 mb-2 group-hover:scale-110 transition" />
-                            <p className="text-sm font-semibold text-gray-900 text-center">Upload PO/DN</p>
-                            <p className="text-xs text-gray-600 mt-1">Procurement</p>
-                        </Link>
-
-                        <Link 
-                            href="/dashboard/reconciliation"
-                            className="flex flex-col items-center justify-center p-4 bg-blue-50 border-2 border-blue-200 rounded-lg hover:bg-blue-100 transition group"
-                        >
-                            <Zap className="w-8 h-8 text-blue-600 mb-2 group-hover:scale-110 transition" />
-                            <p className="text-sm font-semibold text-gray-900 text-center">Auto-Reconcile</p>
-                            <p className="text-xs text-gray-600 mt-1">Bank Match</p>
-                        </Link>
-
-                        <Link 
-                            href="/dashboard/cashflow"
-                            className="flex flex-col items-center justify-center p-4 bg-orange-50 border-2 border-orange-200 rounded-lg hover:bg-orange-100 transition group"
-                        >
-                            <Calendar className="w-8 h-8 text-orange-600 mb-2 group-hover:scale-110 transition" />
-                            <p className="text-sm font-semibold text-gray-900 text-center">Cashflow Forecast</p>
-                            <p className="text-xs text-gray-600 mt-1">90 Days</p>
-                        </Link>
-                    </div>
-                </div>
-
-                {/* Module Navigation Cards */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {/* AR, AP & Bank Reconciliation - Unified Module Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
                     {/* Module 1: Accounts Receivable */}
-                    <Link 
-                        href="/dashboard"
-                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-green-500 p-6 shadow-sm hover:shadow-lg transition group"
-                    >
+                    <div className="bg-white rounded-xl border-2 border-gray-200 hover:border-green-500 p-6 shadow-sm hover:shadow-lg transition group">
                         <div className="flex items-start justify-between mb-4">
                             <div className="p-3 bg-green-100 rounded-lg group-hover:bg-green-500 transition">
                                 <TrendingUp className="w-8 h-8 text-green-600 group-hover:text-white transition" />
                             </div>
                             <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-xs font-semibold">
-                                Module 1
+                                A/R
                             </span>
                         </div>
                         <h3 className="text-xl font-bold text-gray-900 mb-2">Accounts Receivable</h3>
                         <p className="text-gray-600 text-sm mb-4">Track customer payments and send auto-reminders</p>
-                        <div className="space-y-2">
+                        <div className="space-y-2 mb-4">
                             <div className="flex items-center justify-between text-sm">
                                 <span className="text-gray-600">Total Invoices:</span>
                                 <span className="font-semibold text-gray-900">{stats.totalCustomerInvoices}</span>
@@ -356,59 +449,67 @@ export default function CompleteDashboard() {
                                 <span className="font-bold text-gray-900">{stats.totalReceivables.toFixed(0)} SAR</span>
                             </div>
                         </div>
-                    </Link>
+                        <Link 
+                            href="/dashboard?upload=customer"
+                            className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-green-50 border-2 border-green-200 text-green-700 rounded-lg hover:bg-green-100 transition font-semibold text-sm"
+                        >
+                            <Upload className="w-4 h-4" />
+                            Upload Invoice
+                        </Link>
+                    </div>
 
-                    {/* Module 2: Accounts Payable + Procurement */}
-                    <Link 
-                        href="/dashboard/procurement"
-                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-purple-500 p-6 shadow-sm hover:shadow-lg transition group"
-                    >
+                    {/* Module 2: Accounts Payable */}
+                    <div className="bg-white rounded-xl border-2 border-gray-200 hover:border-red-500 p-6 shadow-sm hover:shadow-lg transition group">
                         <div className="flex items-start justify-between mb-4">
-                            <div className="p-3 bg-purple-100 rounded-lg group-hover:bg-purple-500 transition">
-                                <Shield className="w-8 h-8 text-purple-600 group-hover:text-white transition" />
+                            <div className="p-3 bg-red-100 rounded-lg group-hover:bg-red-500 transition">
+                                <TrendingDown className="w-8 h-8 text-red-600 group-hover:text-white transition" />
                             </div>
-                            <span className="px-3 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-semibold">
-                                Module 2
+                            <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
+                                A/P
                             </span>
                         </div>
-                        <h3 className="text-xl font-bold text-gray-900 mb-2">Procurement & Payables</h3>
-                        <p className="text-gray-600 text-sm mb-4">3-way matching detects fraud and overcharges</p>
-                        <div className="space-y-2">
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Accounts Payable</h3>
+                        <p className="text-gray-600 text-sm mb-4">Manage supplier invoices and payments</p>
+                        <div className="space-y-2 mb-4">
                             <div className="flex items-center justify-between text-sm">
-                                <span className="text-gray-600">Supplier Invoices:</span>
+                                <span className="text-gray-600">Total Invoices:</span>
                                 <span className="font-semibold text-gray-900">{stats.totalSupplierInvoices}</span>
                             </div>
                             <div className="flex items-center justify-between text-sm">
-                                <span className="text-gray-600">Purchase Orders:</span>
-                                <span className="font-semibold text-blue-600">{stats.totalPOs}</span>
+                                <span className="text-gray-600">Pending:</span>
+                                <span className="font-semibold text-orange-600">{stats.pendingSupplierInvoices}</span>
                             </div>
                             <div className="flex items-center justify-between text-sm">
-                                <span className="text-gray-600">Anomalies:</span>
-                                <span className="font-semibold text-red-600">{stats.anomaliesDetected}</span>
+                                <span className="text-gray-600">Paid:</span>
+                                <span className="font-semibold text-green-600">{stats.paidSupplierInvoices}</span>
                             </div>
                             <div className="flex items-center justify-between text-sm pt-2 border-t border-gray-200">
-                                <span className="text-gray-600">Money Saved:</span>
-                                <span className="font-bold text-green-600">{stats.moneySaved.toFixed(0)} SAR</span>
+                                <span className="text-gray-600">Total Amount:</span>
+                                <span className="font-bold text-gray-900">{stats.totalPayables.toFixed(0)} SAR</span>
                             </div>
                         </div>
-                    </Link>
+                        <Link 
+                            href="/dashboard/suppliers?upload=supplier"
+                            className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-red-50 border-2 border-red-200 text-red-700 rounded-lg hover:bg-red-100 transition font-semibold text-sm"
+                        >
+                            <FileText className="w-4 h-4" />
+                            Upload Invoice
+                        </Link>
+                    </div>
 
                     {/* Module 3: Bank Reconciliation */}
-                    <Link 
-                        href="/dashboard/reconciliation"
-                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-blue-500 p-6 shadow-sm hover:shadow-lg transition group"
-                    >
+                    <div className="bg-white rounded-xl border-2 border-gray-200 hover:border-blue-500 p-6 shadow-sm hover:shadow-lg transition group">
                         <div className="flex items-start justify-between mb-4">
                             <div className="p-3 bg-blue-100 rounded-lg group-hover:bg-blue-500 transition">
                                 <CheckCircle className="w-8 h-8 text-blue-600 group-hover:text-white transition" />
                             </div>
                             <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold">
-                                Module 3
+                                Bank
                             </span>
                         </div>
                         <h3 className="text-xl font-bold text-gray-900 mb-2">Bank Reconciliation</h3>
                         <p className="text-gray-600 text-sm mb-4">Auto-match bank transactions with invoices</p>
-                        <div className="space-y-2">
+                        <div className="space-y-2 mb-4">
                             <div className="flex items-center justify-between text-sm">
                                 <span className="text-gray-600">Total Transactions:</span>
                                 <span className="font-semibold text-gray-900">{stats.totalBankTransactions}</span>
@@ -430,8 +531,137 @@ export default function CompleteDashboard() {
                                 </span>
                             </div>
                         </div>
-                    </Link>
+                        <Link 
+                            href="/dashboard/reconciliation"
+                            className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-blue-50 border-2 border-blue-200 text-blue-700 rounded-lg hover:bg-blue-100 transition font-semibold text-sm"
+                        >
+                            <Zap className="w-4 h-4" />
+                            Auto-Reconcile
+                        </Link>
+                    </div>
                 </div>
+
+                {/* Cashflow Forecast Chart */}
+                <Link 
+                    href="/dashboard/cashflow"
+                    className="block bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8 hover:shadow-lg transition cursor-pointer group"
+                >
+                    <div className="flex items-center justify-between mb-4">
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-900">90-Day Cash Flow Projection</h2>
+                            <p className="text-sm text-gray-600 mt-1">
+                                Current Position: <span className={`font-semibold ${currentCashPosition >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {currentCashPosition >= 0 ? '+' : ''}{currentCashPosition.toFixed(0)} SAR
+                                </span>
+                            </p>
+                        </div>
+                        <Calendar className="w-6 h-6 text-gray-400 group-hover:text-blue-600 transition" />
+                    </div>
+                    <div className="h-64">
+                        {cashflowData.length > 0 ? (
+                            <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={cashflowData}>
+                                    <defs>
+                                        <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                                    <XAxis 
+                                        dataKey="day" 
+                                        label={{ value: 'Days', position: 'insideBottom', offset: -5 }}
+                                        tick={{ fontSize: 12 }}
+                                        stroke="#6b7280"
+                                    />
+                                    <YAxis 
+                                        label={{ value: 'Balance (SAR)', angle: -90, position: 'insideLeft' }}
+                                        tick={{ fontSize: 12 }}
+                                        stroke="#6b7280"
+                                    />
+                                    <Tooltip 
+                                        contentStyle={{ 
+                                            backgroundColor: 'white', 
+                                            border: '1px solid #e5e7eb',
+                                            borderRadius: '8px',
+                                            padding: '12px'
+                                        }}
+                                        formatter={(value: number | undefined, name: string | undefined) => {
+                                            const labels: Record<string, string> = {
+                                                balance: 'Balance',
+                                                incoming: 'Money In',
+                                                outgoing: 'Money Out'
+                                            };
+                                            const label = labels[name ?? ''] || name || 'Unknown';
+                                            return [`${(value ?? 0).toLocaleString()} SAR`, label];
+                                        }}
+                                        labelFormatter={(label) => `Day ${label}`}
+                                    />
+                                    <Legend 
+                                        verticalAlign="top" 
+                                        height={36}
+                                        iconType="line"
+                                        formatter={(value) => {
+                                            const labels: Record<string, string> = {
+                                                balance: 'Net Balance',
+                                                incoming: 'Incoming',
+                                                outgoing: 'Outgoing'
+                                            };
+                                            return labels[value] || value;
+                                        }}
+                                    />
+                                    <Area 
+                                        type="monotone" 
+                                        dataKey="balance" 
+                                        stroke="#3b82f6" 
+                                        strokeWidth={3}
+                                        fill="url(#colorBalance)"
+                                    />
+                                    <Line 
+                                        type="monotone" 
+                                        dataKey="incoming" 
+                                        stroke="#10b981" 
+                                        strokeWidth={2}
+                                        strokeDasharray="5 5"
+                                        dot={false}
+                                    />
+                                    <Line 
+                                        type="monotone" 
+                                        dataKey="outgoing" 
+                                        stroke="#ef4444" 
+                                        strokeWidth={2}
+                                        strokeDasharray="5 5"
+                                        dot={false}
+                                    />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        ) : (
+                            <div className="flex items-center justify-center h-full text-gray-400">
+                                <div className="text-center">
+                                    <Calendar className="w-12 h-12 mx-auto mb-2" />
+                                    <p>Loading cashflow data...</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    <div className="mt-4 flex items-center justify-center gap-8 text-sm text-gray-600">
+                        <div className="flex items-center gap-2">
+                            <div className="w-8 h-0.5 bg-blue-500"></div>
+                            <span>Net Balance</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="w-8 h-0.5 bg-green-500 border-dashed border-t-2 border-green-500"></div>
+                            <span>Money In</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <div className="w-8 h-0.5 bg-red-500 border-dashed border-t-2 border-red-500"></div>
+                            <span>Money Out</span>
+                        </div>
+                    </div>
+                    <p className="text-xs text-gray-500 text-center mt-2 group-hover:text-blue-600 transition">
+                        Click to view detailed forecast →
+                    </p>
+                </Link>
 
                 {/* Alerts Section */}
                 {stats.anomaliesDetected > 0 && (

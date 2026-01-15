@@ -3,73 +3,59 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { 
-    Upload, Search, Filter, TrendingUp, Clock, CheckCircle, 
-    AlertTriangle, DollarSign, ArrowLeft, Eye, Edit, Trash2,
-    Send, Download, Calendar
+    TrendingUp, TrendingDown, Clock, CheckCircle, AlertTriangle, 
+    DollarSign, Upload, Zap, Shield, Package, FileText, Calendar, Plus, User,
+    ArrowRight, Receipt, Building, CreditCard, BarChart3
 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Area, AreaChart } from 'recharts';
 
-interface CustomerInvoice {
-    id: string;
-    invoice_number: string;
-    invoice_date: string | null;
-    due_date: string | null;
-    amount: string;
-    tax_amount: string;
-    currency: string;
-    status: 'pending' | 'paid' | 'overdue' | 'cancelled';
-    pdf_url: string;
-    paid_at: string | null;
-    customer: {
-        id: string;
-        name: string;
-        email: string;
-    };
-}
-
-export default function CustomerInvoices() {
+export default function DashboardHome() {
     const router = useRouter();
-    const searchParams = useSearchParams();
     const [loading, setLoading] = useState(true);
-    const [uploading, setUploading] = useState(false);
     const [companyId, setCompanyId] = useState('');
-    const [invoices, setInvoices] = useState<CustomerInvoice[]>([]);
-    const [filteredInvoices, setFilteredInvoices] = useState<CustomerInvoice[]>([]);
+    const [companyName, setCompanyName] = useState('');
     
-    const [searchTerm, setSearchTerm] = useState('');
-    const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'paid' | 'overdue'>('all');
-    const [showUploadModal, setShowUploadModal] = useState(false);
-    const [selectedFile, setSelectedFile] = useState<File | null>(null);
-
     const [stats, setStats] = useState({
-        totalInvoices: 0,
-        pendingInvoices: 0,
-        paidInvoices: 0,
-        overdueInvoices: 0,
-        totalAmount: 0,
-        pendingAmount: 0,
-        paidAmount: 0,
-        averageDSO: 0
+        // A/R Stats (Money Coming In)
+        totalCustomerInvoices: 0,
+        pendingCustomerInvoices: 0,
+        paidCustomerInvoices: 0,
+        totalReceivables: 0,
+        averageDSO: 0,
+        
+        // A/P Stats (Money Going Out)
+        totalSupplierInvoices: 0,
+        pendingSupplierInvoices: 0,
+        paidSupplierInvoices: 0,
+        totalPayables: 0,
+        
+        // Procurement Stats
+        totalPOs: 0,
+        anomaliesDetected: 0,
+        moneySaved: 0,
+        
+        // Reconciliation Stats
+        totalBankTransactions: 0,
+        reconciledTransactions: 0,
+        unreconciledTransactions: 0,
+        
+        // Net Position
+        netCashPosition: 0
     });
+
+    const [cashflowData, setCashflowData] = useState<Array<{
+        date: string;
+        day: number;
+        balance: number;
+        incoming: number;
+        outgoing: number;
+    }>>([]);
 
     useEffect(() => {
         loadData();
     }, []);
-
-    // Check if we should open upload modal from URL parameter
-    useEffect(() => {
-        const uploadParam = searchParams.get('upload');
-        if (uploadParam === 'customer' && !loading && companyId) {
-            setShowUploadModal(true);
-            // Clean up URL parameter
-            router.replace('/dashboard', { scroll: false });
-        }
-    }, [searchParams, loading, companyId, router]);
-
-    useEffect(() => {
-        filterInvoices();
-    }, [invoices, searchTerm, statusFilter]);
 
     const loadData = async () => {
         const { data: { user } } = await supabase.auth.getUser();
@@ -80,198 +66,181 @@ export default function CustomerInvoices() {
 
         const { data: userData } = await supabase
             .from('users')
-            .select('company_id')
+            .select('company_id, companies(name)')
             .eq('auth_user_id', user.id)
             .single();
 
         if (userData) {
             setCompanyId(userData.company_id);
-            await loadInvoices(userData.company_id);
+            setCompanyName(userData.companies?.[0]?.name || 'My Company');
+            await Promise.all([
+                loadAllStats(userData.company_id),
+                loadCashflowData(userData.company_id)
+            ]);
         }
 
         setLoading(false);
     };
 
-    const loadInvoices = async (company_id: string) => {
-        const { data, error } = await supabase
+    const loadAllStats = async (company_id: string) => {
+        // Load A/R data (customer invoices)
+        const { data: customerInvoices } = await supabase
             .from('invoices')
-            .select(`
-                *,
-                customer:customers(id, name, email)
-            `)
-            .eq('company_id', company_id)
-            .order('invoice_date', { ascending: false });
+            .select('amount, status, invoice_date, paid_at')
+            .eq('company_id', company_id);
 
-        if (data) {
-            console.log('Raw invoice data:', data); // Debug log
-            
-            // Update status for overdue invoices
-            const today = new Date();
-            const updatedInvoices = data.map(inv => {
-                // Only update status if we have a valid due_date
-                if (inv.status === 'pending' && inv.due_date) {
-                    const dueDate = new Date(inv.due_date);
-                    if (!isNaN(dueDate.getTime()) && dueDate < today) {
-                        return { ...inv, status: 'overdue' };
-                    }
-                }
-                return inv;
-            });
+        const totalCustomerInvoices = customerInvoices?.length || 0;
+        const pendingCustomerInvoices = customerInvoices?.filter(i => i.status === 'pending').length || 0;
+        const paidCustomerInvoices = customerInvoices?.filter(i => i.status === 'paid').length || 0;
+        const totalReceivables = customerInvoices
+            ?.filter(i => i.status === 'pending')
+            .reduce((sum, i) => sum + parseFloat(i.amount), 0) || 0;
 
-            setInvoices(updatedInvoices);
-            calculateStats(updatedInvoices);
-        } else if (error) {
-            console.error('Error loading invoices:', error);
-        }
-    };
-
-    const calculateStats = (invoiceList: CustomerInvoice[]) => {
-        const totalInvoices = invoiceList.length;
-        const pendingInvoices = invoiceList.filter(i => i.status === 'pending').length;
-        const paidInvoices = invoiceList.filter(i => i.status === 'paid').length;
-        const overdueInvoices = invoiceList.filter(i => i.status === 'overdue').length;
-
-        const totalAmount = invoiceList.reduce((sum, i) => sum + parseFloat(i.amount), 0);
-        const pendingAmount = invoiceList
-            .filter(i => i.status === 'pending' || i.status === 'overdue')
-            .reduce((sum, i) => sum + parseFloat(i.amount), 0);
-        const paidAmount = invoiceList
-            .filter(i => i.status === 'paid')
-            .reduce((sum, i) => sum + parseFloat(i.amount), 0);
-
-        // Calculate DSO (Days Sales Outstanding)
-        const paidInvs = invoiceList.filter(i => 
-            i.status === 'paid' && 
-            i.paid_at && 
-            i.invoice_date &&
-            !isNaN(new Date(i.paid_at).getTime()) &&
-            !isNaN(new Date(i.invoice_date).getTime())
-        );
-        
-        const avgDSO = paidInvs.length > 0
-            ? paidInvs.reduce((sum, inv) => {
-                if (!inv.invoice_date || !inv.paid_at) return sum;
+        // Calculate DSO
+        const paidInvoices = customerInvoices?.filter(i => i.status === 'paid' && i.paid_at) || [];
+        const avgDSO = paidInvoices.length > 0
+            ? paidInvoices.reduce((sum, inv) => {
                 const invoiceDate = new Date(inv.invoice_date);
                 const paidDate = new Date(inv.paid_at);
-                const days = Math.floor((paidDate.getTime() - invoiceDate.getTime()) / (1000 * 60 * 60 * 24));
+                const days = Math.ceil((paidDate.getTime() - invoiceDate.getTime()) / (1000 * 60 * 60 * 24));
                 return sum + days;
-            }, 0) / paidInvs.length
+            }, 0) / paidInvoices.length
             : 0;
 
+        // Load A/P data (supplier invoices)
+        const { data: supplierInvoices } = await supabase
+            .from('supplier_invoices')
+            .select('amount, status')
+            .eq('company_id', company_id);
+
+        const totalSupplierInvoices = supplierInvoices?.length || 0;
+        const pendingSupplierInvoices = supplierInvoices?.filter(i => i.status === 'pending').length || 0;
+        const paidSupplierInvoices = supplierInvoices?.filter(i => i.status === 'paid').length || 0;
+        const totalPayables = supplierInvoices
+            ?.filter(i => i.status === 'pending')
+            .reduce((sum, i) => sum + parseFloat(i.amount), 0) || 0;
+
+        // Load Procurement data
+        const { data: purchaseOrders } = await supabase
+            .from('purchase_orders')
+            .select('*')
+            .eq('company_id', company_id);
+
+        const totalPOs = purchaseOrders?.length || 0;
+
+        // Load Reconciliation data
+        const { data: bankAccounts } = await supabase
+            .from('bank_accounts')
+            .select('id')
+            .eq('company_id', company_id);
+
+        let totalBankTransactions = 0;
+        let reconciledTransactions = 0;
+        if (bankAccounts && bankAccounts.length > 0) {
+            const accountIds = bankAccounts.map(a => a.id);
+            const { data: transactions } = await supabase
+                .from('bank_transactions')
+                .select('is_reconciled')
+                .in('bank_account_id', accountIds);
+
+            totalBankTransactions = transactions?.length || 0;
+            reconciledTransactions = transactions?.filter(t => t.is_reconciled).length || 0;
+        }
+
+        // Calculate net cash position
+        const netCashPosition = totalReceivables - totalPayables;
+
         setStats({
-            totalInvoices,
-            pendingInvoices,
-            paidInvoices,
-            overdueInvoices,
-            totalAmount,
-            pendingAmount,
-            paidAmount,
-            averageDSO: Math.round(avgDSO)
+            totalCustomerInvoices,
+            pendingCustomerInvoices,
+            paidCustomerInvoices,
+            totalReceivables,
+            averageDSO: Math.round(avgDSO),
+            totalSupplierInvoices,
+            pendingSupplierInvoices,
+            paidSupplierInvoices,
+            totalPayables,
+            totalPOs,
+            anomaliesDetected: 0, // TODO: Calculate from procurement_anomalies
+            moneySaved: 0, // TODO: Calculate from anomalies
+            totalBankTransactions,
+            reconciledTransactions,
+            unreconciledTransactions: totalBankTransactions - reconciledTransactions,
+            netCashPosition
         });
     };
 
-    const filterInvoices = () => {
-        let filtered = [...invoices];
-
-        // Search filter
-        if (searchTerm) {
-            filtered = filtered.filter(inv =>
-                inv.invoice_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                inv.customer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                inv.customer.email.toLowerCase().includes(searchTerm.toLowerCase())
-            );
-        }
-
-        // Status filter
-        if (statusFilter !== 'all') {
-            filtered = filtered.filter(inv => inv.status === statusFilter);
-        }
-
-        setFilteredInvoices(filtered);
-    };
-
-    const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            setSelectedFile(e.target.files[0]);
-        }
-    };
-
-    const handleUpload = async () => {
-        if (!selectedFile || !companyId) return;
-
-        setUploading(true);
-        try {
-            const formData = new FormData();
-            formData.append('data', selectedFile);
-            formData.append('company_id', companyId);
-
-            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-invoice`, {
-                method: 'POST',
-                body: formData
-            });
-
-            if (response.ok) {
-                alert('Invoice uploaded successfully!');
-                setShowUploadModal(false);
-                setSelectedFile(null);
-                await loadInvoices(companyId);
-            } else {
-                alert('Upload failed. Please try again.');
-            }
-        } catch (error) {
-            console.error('Upload error:', error);
-            alert('Error uploading invoice.');
-        }
-
-        setUploading(false);
-    };
-
-    const handleDelete = async (invoiceId: string) => {
-        if (!confirm('Are you sure you want to delete this invoice?')) return;
-
-        const { error } = await supabase
-            .from('invoices')
-            .delete()
-            .eq('id', invoiceId);
-
-        if (!error) {
-            await loadInvoices(companyId);
-        }
-    };
-
-    const getDaysUntilDue = (dueDate: string | null) => {
-        if (!dueDate) return 0;
-        
+    const loadCashflowData = async (company_id: string) => {
+        // Get current date
         const today = new Date();
-        const due = new Date(dueDate);
+        const daysAhead = 30;
         
-        // Check if date is valid
-        if (isNaN(due.getTime())) return 0;
-        
-        const diff = due.getTime() - today.getTime();
-        return Math.ceil(diff / (1000 * 60 * 60 * 24));
-    };
+        // Load customer invoices (A/R)
+        const { data: customerInvoices } = await supabase
+            .from('invoices')
+            .select('amount, invoice_date, due_date, status')
+            .eq('company_id', company_id)
+            .in('status', ['pending', 'paid']);
 
-    // Format date without timezone issues
-    const formatDate = (dateString: string | null) => {
-        if (!dateString) return 'N/A';
-        
-        // Parse as local date to avoid timezone shifts
-        const [year, month, day] = dateString.split('T')[0].split('-');
-        const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day));
-        
-        if (isNaN(date.getTime())) return 'Invalid date';
-        
-        return date.toLocaleDateString();
+        // Load supplier invoices (A/P)
+        const { data: supplierInvoices } = await supabase
+            .from('supplier_invoices')
+            .select('amount, invoice_date, due_date, status')
+            .eq('company_id', company_id)
+            .in('status', ['pending', 'paid']);
+
+        // Generate cashflow data for next 30 days
+        const cashflow: Array<{
+            date: string;
+            day: number;
+            balance: number;
+            incoming: number;
+            outgoing: number;
+        }> = [];
+
+        let currentBalance = stats.netCashPosition;
+
+        for (let i = 0; i <= daysAhead; i++) {
+            const date = new Date(today);
+            date.setDate(date.getDate() + i);
+            const dateStr = date.toISOString().split('T')[0];
+
+            // Calculate incoming (A/R payments due today)
+            const incoming = customerInvoices
+                ?.filter(inv => {
+                    if (inv.status === 'paid') return false;
+                    const dueDate = inv.due_date ? new Date(inv.due_date).toISOString().split('T')[0] : null;
+                    return dueDate === dateStr;
+                })
+                .reduce((sum, inv) => sum + parseFloat(inv.amount), 0) || 0;
+
+            // Calculate outgoing (A/P payments due today)
+            const outgoing = supplierInvoices
+                ?.filter(inv => {
+                    if (inv.status === 'paid') return false;
+                    const dueDate = inv.due_date ? new Date(inv.due_date).toISOString().split('T')[0] : null;
+                    return dueDate === dateStr;
+                })
+                .reduce((sum, inv) => sum + parseFloat(inv.amount), 0) || 0;
+
+            currentBalance = currentBalance + incoming - outgoing;
+
+            cashflow.push({
+                date: dateStr,
+                day: i,
+                balance: currentBalance,
+                incoming,
+                outgoing
+            });
+        }
+
+        setCashflowData(cashflow);
     };
 
     if (loading) {
         return (
-            <div className="flex items-center justify-center min-h-screen bg-gray-50">
-                <div className="text-center">
-                    <div className="w-16 h-16 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                    <p className="text-gray-600">Loading invoices...</p>
-                </div>
+            <div className="min-h-screen flex items-center justify-center">
+                <div className="text-lg">Loading...</div>
             </div>
         );
     }
@@ -282,282 +251,344 @@ export default function CustomerInvoices() {
             <div className="bg-white border-b border-gray-200 shadow-sm">
                 <div className="max-w-7xl mx-auto px-8 py-6">
                     <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-4">
-                            <Link href="/" className="p-2 hover:bg-gray-100 rounded-lg transition">
-                                <ArrowLeft className="w-5 h-5 text-gray-600" />
-                            </Link>
-                            <div>
-                                <h1 className="text-3xl font-bold text-gray-900">Customer Invoices</h1>
-                                <p className="text-gray-600 mt-1">Track payments from customers (A/R)</p>
-                            </div>
+                        <div>
+                            <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
+                            <p className="text-gray-600 mt-1">Welcome back, {companyName}</p>
                         </div>
-                        <button
-                            onClick={() => setShowUploadModal(true)}
-                            className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold transition"
-                        >
-                            <Upload className="w-5 h-5" />
-                            Upload Invoice
-                        </button>
                     </div>
                 </div>
             </div>
 
             <div className="max-w-7xl mx-auto px-8 py-8">
-                {/* Stats Grid */}
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                    <div className="bg-white rounded-xl shadow-sm border-2 border-gray-200 p-6">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-blue-100 rounded-lg">
+                {/* Quick Stats */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    {/* Net Cash Position */}
+                    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="p-3 bg-blue-100 rounded-lg">
                                 <DollarSign className="w-6 h-6 text-blue-600" />
                             </div>
-                            <p className="text-sm font-medium text-gray-600">Total Invoices</p>
+                            <span className={`text-sm font-semibold ${stats.netCashPosition >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                {stats.netCashPosition >= 0 ? <TrendingUp className="w-4 h-4 inline" /> : <TrendingDown className="w-4 h-4 inline" />}
+                            </span>
                         </div>
-                        <p className="text-3xl font-bold text-gray-900">{stats.totalInvoices}</p>
-                        <p className="text-sm text-gray-500 mt-1">{stats.totalAmount.toFixed(0)} SAR</p>
+                        <h3 className="text-gray-600 text-sm font-medium mb-1">Net Cash Position</h3>
+                        <p className="text-2xl font-bold text-gray-900">
+                            {stats.netCashPosition >= 0 ? '+' : ''}{stats.netCashPosition.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SAR
+                        </p>
                     </div>
 
-                    <div className="bg-white rounded-xl shadow-sm border-2 border-orange-200 p-6">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-orange-100 rounded-lg">
-                                <Clock className="w-6 h-6 text-orange-600" />
+                    {/* Total Receivables */}
+                    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="p-3 bg-green-100 rounded-lg">
+                                <TrendingUp className="w-6 h-6 text-green-600" />
                             </div>
-                            <p className="text-sm font-medium text-gray-600">Pending</p>
                         </div>
-                        <p className="text-3xl font-bold text-orange-600">{stats.pendingInvoices}</p>
-                        <p className="text-sm text-gray-500 mt-1">{stats.pendingAmount.toFixed(0)} SAR</p>
+                        <h3 className="text-gray-600 text-sm font-medium mb-1">Total Receivables (A/R)</h3>
+                        <p className="text-2xl font-bold text-gray-900">
+                            {stats.totalReceivables.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SAR
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">{stats.pendingCustomerInvoices} pending invoices</p>
                     </div>
 
-                    <div className="bg-white rounded-xl shadow-sm border-2 border-green-200 p-6">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-green-100 rounded-lg">
-                                <CheckCircle className="w-6 h-6 text-green-600" />
+                    {/* Total Payables */}
+                    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="p-3 bg-red-100 rounded-lg">
+                                <TrendingDown className="w-6 h-6 text-red-600" />
                             </div>
-                            <p className="text-sm font-medium text-gray-600">Paid</p>
                         </div>
-                        <p className="text-3xl font-bold text-green-600">{stats.paidInvoices}</p>
-                        <p className="text-sm text-gray-500 mt-1">{stats.paidAmount.toFixed(0)} SAR</p>
+                        <h3 className="text-gray-600 text-sm font-medium mb-1">Total Payables (A/P)</h3>
+                        <p className="text-2xl font-bold text-gray-900">
+                            {stats.totalPayables.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SAR
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">{stats.pendingSupplierInvoices} pending invoices</p>
                     </div>
 
-                    <div className="bg-white rounded-xl shadow-sm border-2 border-red-200 p-6">
-                        <div className="flex items-center gap-3 mb-3">
-                            <div className="p-2 bg-red-100 rounded-lg">
-                                <AlertTriangle className="w-6 h-6 text-red-600" />
+                    {/* Average DSO */}
+                    <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="p-3 bg-purple-100 rounded-lg">
+                                <Clock className="w-6 h-6 text-purple-600" />
                             </div>
-                            <p className="text-sm font-medium text-gray-600">Overdue</p>
                         </div>
-                        <p className="text-3xl font-bold text-red-600">{stats.overdueInvoices}</p>
-                        <p className="text-sm text-gray-500 mt-1">DSO: {stats.averageDSO}d</p>
+                        <h3 className="text-gray-600 text-sm font-medium mb-1">Average DSO</h3>
+                        <p className="text-2xl font-bold text-gray-900">{stats.averageDSO} days</p>
+                        <p className="text-xs text-gray-500 mt-1">Days Sales Outstanding</p>
                     </div>
                 </div>
 
-                {/* Filters */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-6">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* Search */}
-                        <div className="relative">
-                            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                            <input
-                                type="text"
-                                placeholder="Search by invoice #, customer name, or email..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                            />
+                {/* Main Modules Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+                    {/* Module 1: Sales & Invoices (A/R) */}
+                    <Link 
+                        href="/dashboard/invoices"
+                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-green-500 p-6 shadow-sm hover:shadow-lg transition group"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="p-3 bg-green-100 rounded-lg group-hover:bg-green-500 transition">
+                                <Receipt className="w-8 h-8 text-green-600 group-hover:text-white transition" />
+                            </div>
+                            <span className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-xs font-semibold">
+                                Sales
+                            </span>
                         </div>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Sales & Invoices</h3>
+                        <p className="text-gray-600 text-sm mb-4">Manage customer invoices and track receivables (A/R)</p>
+                        <div className="space-y-2 mb-4">
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Total Invoices</span>
+                                <span className="font-semibold text-gray-900">{stats.totalCustomerInvoices}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Pending</span>
+                                <span className="font-semibold text-yellow-600">{stats.pendingCustomerInvoices}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Paid</span>
+                                <span className="font-semibold text-green-600">{stats.paidCustomerInvoices}</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-green-50 border-2 border-green-200 text-green-700 rounded-lg hover:bg-green-100 transition font-semibold text-sm">
+                            <FileText className="w-4 h-4" />
+                            View Invoices
+                            <ArrowRight className="w-4 h-4" />
+                        </div>
+                    </Link>
 
-                        {/* Status Filter */}
-                        <div className="relative">
-                            <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-                            <select
-                                value={statusFilter}
-                                onChange={(e) => setStatusFilter(e.target.value as any)}
-                                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent appearance-none bg-white"
-                            >
-                                <option value="all">All Status</option>
-                                <option value="pending">Pending</option>
-                                <option value="paid">Paid</option>
-                                <option value="overdue">Overdue</option>
-                            </select>
+                    {/* Module 2: Suppliers & Payables (A/P) */}
+                    <Link 
+                        href="/dashboard/suppliers"
+                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-red-500 p-6 shadow-sm hover:shadow-lg transition group"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="p-3 bg-red-100 rounded-lg group-hover:bg-red-500 transition">
+                                <Building className="w-8 h-8 text-red-600 group-hover:text-white transition" />
+                            </div>
+                            <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
+                                Purchasing
+                            </span>
                         </div>
-                    </div>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Suppliers & Payables</h3>
+                        <p className="text-gray-600 text-sm mb-4">Manage supplier invoices and track payables (A/P)</p>
+                        <div className="space-y-2 mb-4">
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Total Invoices</span>
+                                <span className="font-semibold text-gray-900">{stats.totalSupplierInvoices}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Pending</span>
+                                <span className="font-semibold text-yellow-600">{stats.pendingSupplierInvoices}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Paid</span>
+                                <span className="font-semibold text-green-600">{stats.paidSupplierInvoices}</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-red-50 border-2 border-red-200 text-red-700 rounded-lg hover:bg-red-100 transition font-semibold text-sm">
+                            <Building className="w-4 h-4" />
+                            View Suppliers
+                            <ArrowRight className="w-4 h-4" />
+                        </div>
+                    </Link>
+
+                    {/* Module 3: Procurement */}
+                    <Link 
+                        href="/dashboard/procurement"
+                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-blue-500 p-6 shadow-sm hover:shadow-lg transition group"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="p-3 bg-blue-100 rounded-lg group-hover:bg-blue-500 transition">
+                                <Package className="w-8 h-8 text-blue-600 group-hover:text-white transition" />
+                            </div>
+                            <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-semibold">
+                                Procurement
+                            </span>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Procurement</h3>
+                        <p className="text-gray-600 text-sm mb-4">Manage purchase orders and detect anomalies</p>
+                        <div className="space-y-2 mb-4">
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Total POs</span>
+                                <span className="font-semibold text-gray-900">{stats.totalPOs}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Anomalies</span>
+                                <span className="font-semibold text-red-600">{stats.anomaliesDetected}</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-blue-50 border-2 border-blue-200 text-blue-700 rounded-lg hover:bg-blue-100 transition font-semibold text-sm">
+                            <Package className="w-4 h-4" />
+                            View Procurement
+                            <ArrowRight className="w-4 h-4" />
+                        </div>
+                    </Link>
+
+                    {/* Module 4: Reconciliation */}
+                    <Link 
+                        href="/dashboard/reconciliation"
+                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-yellow-500 p-6 shadow-sm hover:shadow-lg transition group"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="p-3 bg-yellow-100 rounded-lg group-hover:bg-yellow-500 transition">
+                                <Zap className="w-8 h-8 text-yellow-600 group-hover:text-white transition" />
+                            </div>
+                            <span className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-xs font-semibold">
+                                Reconciliation
+                            </span>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Reconciliation</h3>
+                        <p className="text-gray-600 text-sm mb-4">Match bank transactions with invoices</p>
+                        <div className="space-y-2 mb-4">
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Total Transactions</span>
+                                <span className="font-semibold text-gray-900">{stats.totalBankTransactions}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Reconciled</span>
+                                <span className="font-semibold text-green-600">{stats.reconciledTransactions}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                                <span className="text-gray-600">Unreconciled</span>
+                                <span className="font-semibold text-red-600">{stats.unreconciledTransactions}</span>
+                            </div>
+                        </div>
+                        <div className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-yellow-50 border-2 border-yellow-200 text-yellow-700 rounded-lg hover:bg-yellow-100 transition font-semibold text-sm">
+                            <Zap className="w-4 h-4" />
+                            Auto-Reconcile
+                            <ArrowRight className="w-4 h-4" />
+                        </div>
+                    </Link>
+
+                    {/* Module 5: Contacts */}
+                    <Link 
+                        href="/dashboard/contacts"
+                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-purple-500 p-6 shadow-sm hover:shadow-lg transition group"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="p-3 bg-purple-100 rounded-lg group-hover:bg-purple-500 transition">
+                                <User className="w-8 h-8 text-purple-600 group-hover:text-white transition" />
+                            </div>
+                            <span className="px-3 py-1 bg-purple-100 text-purple-800 rounded-full text-xs font-semibold">
+                                Contacts
+                            </span>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Contacts</h3>
+                        <p className="text-gray-600 text-sm mb-4">Manage contacts and sync with Wafeq</p>
+                        <div className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-purple-50 border-2 border-purple-200 text-purple-700 rounded-lg hover:bg-purple-100 transition font-semibold text-sm">
+                            <User className="w-4 h-4" />
+                            Manage Contacts
+                            <ArrowRight className="w-4 h-4" />
+                        </div>
+                    </Link>
+
+                    {/* Module 6: Cashflow */}
+                    <Link 
+                        href="/dashboard/cashflow"
+                        className="bg-white rounded-xl border-2 border-gray-200 hover:border-indigo-500 p-6 shadow-sm hover:shadow-lg transition group"
+                    >
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="p-3 bg-indigo-100 rounded-lg group-hover:bg-indigo-500 transition">
+                                <BarChart3 className="w-8 h-8 text-indigo-600 group-hover:text-white transition" />
+                            </div>
+                            <span className="px-3 py-1 bg-indigo-100 text-indigo-800 rounded-full text-xs font-semibold">
+                                Cashflow
+                            </span>
+                        </div>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Cashflow Forecast</h3>
+                        <p className="text-gray-600 text-sm mb-4">View cashflow projections and forecasts</p>
+                        <div className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-indigo-50 border-2 border-indigo-200 text-indigo-700 rounded-lg hover:bg-indigo-100 transition font-semibold text-sm">
+                            <BarChart3 className="w-4 h-4" />
+                            View Forecast
+                            <ArrowRight className="w-4 h-4" />
+                        </div>
+                    </Link>
                 </div>
 
-                {/* Invoices Table */}
-                <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                    {filteredInvoices.length === 0 ? (
-                        <div className="p-12 text-center">
-                            <DollarSign className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                            <p className="text-xl text-gray-600 mb-2">No invoices found</p>
-                            <p className="text-gray-500 mb-4">
-                                {searchTerm ? 'Try a different search term' : 'Upload your first customer invoice to get started'}
-                            </p>
-                            <button
-                                onClick={() => setShowUploadModal(true)}
-                                className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
-                            >
-                                <Upload className="w-5 h-5" />
-                                Upload Invoice
-                            </button>
+                {/* Cashflow Forecast Chart */}
+                <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm mb-8">
+                    <div className="flex items-center justify-between mb-6">
+                        <div>
+                            <h2 className="text-xl font-bold text-gray-900">Cashflow Forecast</h2>
+                            <p className="text-sm text-gray-600 mt-1">30-day projection</p>
                         </div>
+                        <Link
+                            href="/dashboard/cashflow"
+                            className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                            View Details →
+                        </Link>
+                    </div>
+                    {cashflowData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height={300}>
+                            <AreaChart data={cashflowData}>
+                                <defs>
+                                    <linearGradient id="colorBalance" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.3}/>
+                                        <stop offset="95%" stopColor="#3B82F6" stopOpacity={0}/>
+                                    </linearGradient>
+                                    <linearGradient id="colorIncoming" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#10B981" stopOpacity={0.3}/>
+                                        <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
+                                    </linearGradient>
+                                    <linearGradient id="colorOutgoing" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#EF4444" stopOpacity={0.3}/>
+                                        <stop offset="95%" stopColor="#EF4444" stopOpacity={0}/>
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                                <XAxis 
+                                    dataKey="day" 
+                                    tickFormatter={(value) => `Day ${value}`}
+                                    stroke="#6B7280"
+                                />
+                                <YAxis 
+                                    tickFormatter={(value) => `${(value / 1000).toFixed(0)}k`}
+                                    stroke="#6B7280"
+                                />
+                                <Tooltip 
+                                    contentStyle={{ backgroundColor: '#fff', border: '1px solid #E5E7EB', borderRadius: '8px' }}
+                                    formatter={(value: number) => [`${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SAR`, '']}
+                                    labelFormatter={(label) => `Day ${label}`}
+                                />
+                                <Legend />
+                                <Area 
+                                    type="monotone" 
+                                    dataKey="balance" 
+                                    stroke="#3B82F6" 
+                                    fillOpacity={1} 
+                                    fill="url(#colorBalance)"
+                                    name="Balance"
+                                />
+                                <Area 
+                                    type="monotone" 
+                                    dataKey="incoming" 
+                                    stroke="#10B981" 
+                                    fillOpacity={1} 
+                                    fill="url(#colorIncoming)"
+                                    name="Incoming"
+                                />
+                                <Area 
+                                    type="monotone" 
+                                    dataKey="outgoing" 
+                                    stroke="#EF4444" 
+                                    fillOpacity={1} 
+                                    fill="url(#colorOutgoing)"
+                                    name="Outgoing"
+                                />
+                            </AreaChart>
+                        </ResponsiveContainer>
                     ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full">
-                                <thead className="bg-gray-50 border-b border-gray-200">
-                                    <tr>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Invoice #</th>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Customer</th>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Date</th>
-                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase">Due Date</th>
-                                        <th className="px-6 py-4 text-right text-xs font-semibold text-gray-600 uppercase">Amount</th>
-                                        <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Status</th>
-                                        <th className="px-6 py-4 text-center text-xs font-semibold text-gray-600 uppercase">Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-gray-200">
-                                    {filteredInvoices.map((invoice) => {
-                                        return (
-                                            <tr key={invoice.id} className="hover:bg-gray-50 transition">
-                                                <td className="px-6 py-4">
-                                                    <p className="text-sm font-semibold text-gray-900">{invoice.invoice_number}</p>
-                                                </td>
-                                                <td className="px-6 py-4">
-                                                    <p className="text-sm font-medium text-gray-900">{invoice.customer.name}</p>
-                                                    <p className="text-xs text-gray-600">{invoice.customer.email}</p>
-                                                </td>
-                                                <td className="px-6 py-4 text-sm text-gray-600">
-                                                    {formatDate(invoice.invoice_date)}
-                                                </td>
-                                                <td className="px-6 py-4">
-                                                    {invoice.due_date ? (
-                                                        <>
-                                                            <p className="text-sm text-gray-900">
-                                                                {formatDate(invoice.due_date)}
-                                                            </p>
-                                                            {invoice.status === 'pending' && (() => {
-                                                                const daysUntilDue = getDaysUntilDue(invoice.due_date);
-                                                                return (
-                                                                    <p className={`text-xs ${
-                                                                        daysUntilDue < 0 ? 'text-red-600' :
-                                                                        daysUntilDue <= 7 ? 'text-orange-600' :
-                                                                        'text-gray-600'
-                                                                    }`}>
-                                                                        {daysUntilDue < 0 ? `${Math.abs(daysUntilDue)}d overdue` : `${daysUntilDue}d left`}
-                                                                    </p>
-                                                                );
-                                                            })()}
-                                                        </>
-                                                    ) : (
-                                                        <p className="text-sm text-gray-400">No due date</p>
-                                                    )}
-                                                </td>
-                                                <td className="px-6 py-4 text-right">
-                                                    <p className="text-sm font-bold text-gray-900">
-                                                        {parseFloat(invoice.amount).toFixed(2)} {invoice.currency}
-                                                    </p>
-                                                </td>
-                                                <td className="px-6 py-4 text-center">
-                                                    <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-semibold ${
-                                                        invoice.status === 'paid' ? 'bg-green-100 text-green-800' :
-                                                        invoice.status === 'overdue' ? 'bg-red-100 text-red-800' :
-                                                        invoice.status === 'pending' ? 'bg-orange-100 text-orange-800' :
-                                                        'bg-gray-100 text-gray-800'
-                                                    }`}>
-                                                        {invoice.status === 'paid' && <CheckCircle className="w-3 h-3" />}
-                                                        {invoice.status === 'overdue' && <AlertTriangle className="w-3 h-3" />}
-                                                        {invoice.status === 'pending' && <Clock className="w-3 h-3" />}
-                                                        {invoice.status.toUpperCase()}
-                                                    </span>
-                                                </td>
-                                                <td className="px-6 py-4">
-                                                    <div className="flex items-center justify-center gap-2">
-                                                        <Link
-                                                            href={`/dashboard/invoices/${invoice.id}`}
-                                                            className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                                                            title="View"
-                                                        >
-                                                            <Eye className="w-4 h-4" />
-                                                        </Link>
-                                                        <Link
-                                                            href={`/dashboard/invoices/${invoice.id}/edit`}
-                                                            className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition"
-                                                            title="Edit"
-                                                        >
-                                                            <Edit className="w-4 h-4" />
-                                                        </Link>
-                                                        <button
-                                                            onClick={() => handleDelete(invoice.id)}
-                                                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition"
-                                                            title="Delete"
-                                                        >
-                                                            <Trash2 className="w-4 h-4" />
-                                                        </button>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
+                        <div className="h-[300px] flex items-center justify-center text-gray-500">
+                            <div className="text-center">
+                                <BarChart3 className="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                <p>Loading cashflow data...</p>
+                            </div>
                         </div>
                     )}
                 </div>
             </div>
-
-            {/* Upload Modal */}
-            {showUploadModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
-                        <h3 className="text-xl font-bold text-gray-900 mb-4">Upload Customer Invoice</h3>
-                        
-                        <div className="mb-6">
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                                Select Invoice (PDF or Image)
-                            </label>
-                            <input
-                                type="file"
-                                accept="image/*,application/pdf"
-                                onChange={handleFileSelect}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                            />
-                            {selectedFile && (
-                                <p className="text-sm text-gray-600 mt-2">
-                                    Selected: {selectedFile.name}
-                                </p>
-                            )}
-                        </div>
-
-                        <div className="flex gap-3">
-                            <button
-                                onClick={() => {
-                                    setShowUploadModal(false);
-                                    setSelectedFile(null);
-                                }}
-                                className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition"
-                                disabled={uploading}
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleUpload}
-                                disabled={!selectedFile || uploading}
-                                className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:bg-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                            >
-                                {uploading ? (
-                                    <>
-                                        <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                        Uploading...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Upload className="w-4 h-4" />
-                                        Upload
-                                    </>
-                                )}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

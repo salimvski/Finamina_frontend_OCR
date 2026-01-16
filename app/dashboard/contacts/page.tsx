@@ -844,7 +844,7 @@ export default function ContactsPage() {
                                                     contact.relationship === 'both' ? 'bg-blue-100 text-blue-800' :
                                                     'bg-gray-100 text-gray-800'
                                                 }`}>
-                                                    {contact.relationship || contact.contact_type || 'customer'}
+                                                    {contact.relationship || 'customer'}
                                                 </span>
                                             </td>
                                             <td className="hidden md:table-cell px-3 py-4 whitespace-nowrap">

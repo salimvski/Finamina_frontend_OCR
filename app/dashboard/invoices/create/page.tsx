@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { ArrowLeft, Plus, Trash2, Loader2, X, Calendar, Upload, Paperclip, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
@@ -63,8 +63,9 @@ interface WafeqTaxRate {
   rate?: number;
 }
 
-export default function CreateInvoicePage() {
+function CreateInvoicePageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -103,6 +104,17 @@ export default function CreateInvoicePage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Auto-select PO from URL parameter
+  useEffect(() => {
+    const poIdFromUrl = searchParams.get('po_id');
+    if (poIdFromUrl && purchaseOrders.length > 0) {
+      const po = purchaseOrders.find(p => p.id === poIdFromUrl);
+      if (po) {
+        handlePOSelection(poIdFromUrl);
+      }
+    }
+  }, [searchParams, purchaseOrders]);
 
   const loadData = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -329,7 +341,7 @@ export default function CreateInvoicePage() {
             // "Dell Laptop XPS 15" -> "Dell Laptop"
             // "HP Printer LaserJet Pro" -> "HP Printer"
             // "DELL Laptop" -> "DELL Laptop"
-            const words = productName.split(/\s+/).filter(w => w.length > 0);
+            const words = productName.split(/\s+/).filter((w: string) => w.length > 0);
             if (words.length >= 2) {
               // Take first 2 words (brand + product type)
               itemName = words.slice(0, 2).join(' ');
@@ -809,8 +821,8 @@ export default function CreateInvoicePage() {
         throw new Error(`Failed to save invoice: ${supabaseError.message}`);
       }
 
-      // Step 4: Redirect to invoice detail page
-      router.push(`/dashboard/invoices/${savedInvoice.id}`);
+      // Step 4: Redirect to invoices list page (invoices tab)
+      router.push(`/dashboard/invoices?id=${savedInvoice.id}`);
     } catch (err: any) {
       console.error('Error creating invoice:', err);
       setError(err.message || 'Failed to create invoice. Please try again.');
@@ -1082,7 +1094,7 @@ export default function CreateInvoicePage() {
                                 {accounts.map((account) => {
                                   // Show account type instead of ID
                                   const accountType = account.type || account.account_type || 'Account';
-                                  const displayName = account.name || account.title || account.label || account.code || 'Unknown Account';
+                                  const displayName = account.name || account.code || 'Unknown Account';
                                   const displayCode = account.code || '';
                                   
                                   return (
@@ -1266,5 +1278,20 @@ export default function CreateInvoicePage() {
         </form>
       </div>
     </div>
+  );
+}
+
+export default function CreateInvoicePage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-blue-600" />
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <CreateInvoicePageContent />
+    </Suspense>
   );
 }

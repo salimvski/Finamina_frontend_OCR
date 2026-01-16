@@ -549,7 +549,7 @@ export default function DashboardHome() {
                                 />
                                 <Tooltip 
                                     contentStyle={{ backgroundColor: '#fff', border: '1px solid #E5E7EB', borderRadius: '8px' }}
-                                    formatter={(value: number) => [`${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SAR`, '']}
+                                    formatter={(value: number | undefined) => [`${(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SAR`, '']}
                                     labelFormatter={(label) => `Day ${label}`}
                                 />
                                 <Legend />

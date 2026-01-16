@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { 
     Package, TrendingDown, AlertTriangle, CheckCircle, Clock,
@@ -20,7 +20,7 @@ interface UploadModal {
     error?: string;
 }
 
-export default function ProcurementPage() {
+function ProcurementPageContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const [loading, setLoading] = useState(true);
@@ -804,4 +804,19 @@ export default function ProcurementPage() {
             </div>
         </div>
     );
+}
+
+export default function ProcurementPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-blue-600" />
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <ProcurementPageContent />
+    </Suspense>
+  );
 }

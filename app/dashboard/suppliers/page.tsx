@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import { supabase } from '@/lib/supabase';
 import { 
     Upload, Search, Filter, TrendingDown, Clock, CheckCircle, 
@@ -33,7 +33,7 @@ interface SupplierInvoice {
     };
 }
 
-export default function SupplierInvoices() {
+function SupplierInvoicesContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const [loading, setLoading] = useState(true);
@@ -641,4 +641,19 @@ export default function SupplierInvoices() {
             )}
         </div>
     );
+}
+
+export default function SupplierInvoices() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    }>
+      <SupplierInvoicesContent />
+    </Suspense>
+  );
 }

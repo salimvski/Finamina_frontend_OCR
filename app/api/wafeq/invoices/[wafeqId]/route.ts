@@ -40,10 +40,10 @@ async function wafeqRequest(
 // PATCH /api/wafeq/invoices/[wafeqId] - Update an existing invoice
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { wafeqId: string } }
+  { params }: { params: Promise<{ wafeqId: string }> }
 ) {
   try {
-    const { wafeqId } = params;
+    const { wafeqId } = await params;
 
     if (!wafeqId) {
       return NextResponse.json(

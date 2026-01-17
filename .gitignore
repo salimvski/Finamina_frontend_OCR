@@ -39,3 +39,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# SQL migrations (database migrations should be managed separately)
+*.sql
+
+# Setup scripts and documentation (not needed in repo)
+setup-*.sh
+*_SETUP.md
+*_PLAN.md
+*_GUIDE.md
+*_STRUCTURE.md
+*_CHANGES.md

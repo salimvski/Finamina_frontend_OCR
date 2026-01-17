@@ -5,6 +5,9 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { Search, Filter, ArrowUpDown, X, Edit, CheckCircle, Clock, Info, FileText, ArrowLeft, Download, Upload, CloudUpload, Plus, Package, Shield, AlertTriangle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
+import { useToast } from '@/lib/toast';
+import { validateFile } from '@/lib/validation';
+import { getErrorMessage, safeApiCall, fetchWithTimeout } from '@/lib/error-handling';
 
 interface Invoice {
   id: string;
@@ -33,11 +36,13 @@ interface Invoice {
 interface DeliveryNote {
   id: string;
   dn_number: string;
-  dn_date: string;
+  dn_date?: string;
+  delivery_date?: string;
   customer_id?: string;
   po_id?: string;
   amount?: string;
   status?: string;
+  extraction_data?: { amount?: number | string };
   customers?: {
     id: string;
     name: string;
@@ -112,6 +117,7 @@ interface PurchaseOrder {
 function InvoicesPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { showToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [companyId, setCompanyId] = useState('');
   const [activeTab, setActiveTab] = useState<'pending-pos' | 'invoices' | 'matching'>('pending-pos');
@@ -132,15 +138,33 @@ function InvoicesPageContent() {
   const [showUploadPOModal, setShowUploadPOModal] = useState(false);
   const [showUploadInvoiceModal, setShowUploadInvoiceModal] = useState(false);
   const [showUploadDNModal, setShowUploadDNModal] = useState(false);
+  const [showCreateDNModal, setShowCreateDNModal] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Create DN form state
+  const [dnFormData, setDnFormData] = useState({
+    invoice_id: '',
+    customer_id: '',
+    po_id: '',
+    dn_number: '',
+    delivery_date: new Date().toISOString().split('T')[0],
+    received_by: '',
+    line_items: [] as Array<{ description: string; quantity: number; unit_price: number; item_number?: string; unit_of_measure?: string }>
+  });
+  const [availableCustomers, setAvailableCustomers] = useState<Array<{ id: string; name: string; company_name?: string }>>([]);
+  const [availablePOs, setAvailablePOs] = useState<Array<{ id: string; po_number: string; customer_id?: string }>>([]);
+  const [availableInvoices, setAvailableInvoices] = useState<Array<{ id: string; invoice_number: string; customer_id: string; po_id: string | null }>>([]);
+  const [creatingDN, setCreatingDN] = useState(false);
+  const [dnNumberGenerated, setDnNumberGenerated] = useState(false);
 
   // 3-Way Matching
   const [matching, setMatching] = useState(false);
   const [deliveryNotes, setDeliveryNotes] = useState<DeliveryNote[]>([]);
   const [arMatches, setArMatches] = useState<ARMatch[]>([]);
   const [arAnomalies, setArAnomalies] = useState<ARAnomaly[]>([]);
+  const [matchRunResult, setMatchRunResult] = useState<{ matches: number; anomalies: number } | null>(null);
   const [matchingTab, setMatchingTab] = useState<'overview' | 'delivery-notes' | 'matches' | 'anomalies'>('overview');
 
   useEffect(() => {
@@ -192,6 +216,12 @@ function InvoicesPageContent() {
       setSelectedInvoice(invoices[0]);
     }
   }, [invoices, searchParams]);
+
+  useEffect(() => {
+    if (!matchRunResult) return;
+    const t = setTimeout(() => setMatchRunResult(null), 5000);
+    return () => clearTimeout(t);
+  }, [matchRunResult]);
 
   const loadData = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -422,22 +452,41 @@ function InvoicesPageContent() {
     try {
       const { data, error } = await supabase
         .from('ar_three_way_matches')
-        .select(`
-          *,
-          purchase_order:purchase_orders(po_number),
-          delivery_note:delivery_notes(dn_number),
-          invoice:invoices(invoice_number)
-        `)
+        .select('*')
         .eq('company_id', company_id)
         .order('created_at', { ascending: false });
 
-      if (data) {
-        setArMatches(data);
-      } else if (error) {
+      if (error) {
         console.error('Error loading AR matches:', error);
+        setArMatches([]);
+        return;
       }
-    } catch (error) {
-      console.error('Error in loadARMatches:', error);
+      if (!data || data.length === 0) {
+        setArMatches([]);
+        return;
+      }
+      // Fetch related po_number, dn_number, invoice_number (avoids FK join issues)
+      const poIds = [...new Set(data.map((m: any) => m.po_id).filter(Boolean))];
+      const dnIds = [...new Set(data.map((m: any) => m.dn_id).filter(Boolean))];
+      const invIds = [...new Set(data.map((m: any) => m.invoice_id).filter(Boolean))];
+      const [poRes, dnRes, invRes] = await Promise.all([
+        poIds.length ? supabase.from('purchase_orders').select('id, po_number').in('id', poIds) : { data: [] },
+        dnIds.length ? supabase.from('delivery_notes').select('id, dn_number').in('id', dnIds) : { data: [] },
+        invIds.length ? supabase.from('invoices').select('id, invoice_number').in('id', invIds) : { data: [] }
+      ]);
+      const poMap = new Map((poRes.data || []).map((r: any) => [r.id, { po_number: r.po_number }]));
+      const dnMap = new Map((dnRes.data || []).map((r: any) => [r.id, { dn_number: r.dn_number }]));
+      const invMap = new Map((invRes.data || []).map((r: any) => [r.id, { invoice_number: r.invoice_number }]));
+      const merged = data.map((m: any) => ({
+        ...m,
+        purchase_order: m.po_id ? poMap.get(m.po_id) : undefined,
+        delivery_note: m.dn_id ? dnMap.get(m.dn_id) : undefined,
+        invoice: m.invoice_id ? invMap.get(m.invoice_id) : undefined
+      }));
+      setArMatches(merged);
+    } catch (err) {
+      console.error('Error in loadARMatches:', err);
+      setArMatches([]);
     }
   };
 
@@ -464,11 +513,13 @@ function InvoicesPageContent() {
   };
 
   const handleRun3WayMatch = async () => {
-    if (!companyId) return;
+    if (!companyId) {
+      showToast('Company ID is missing. Please refresh the page.', 'error');
+      return;
+    }
 
     setMatching(true);
     try {
-      // Use our own API route instead of n8n (no new workflow needed)
       const response = await fetch('/api/ar/three-way-match', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -478,60 +529,315 @@ function InvoicesPageContent() {
       const result = await response.json();
 
       if (response.ok && result.success) {
-        alert(`A/R 3-Way matching completed! ${result.matches_created} matches, ${result.anomalies_created} anomalies.`);
+        setMatchRunResult({ matches: result.matches_created ?? 0, anomalies: result.anomalies_created ?? 0 });
+        showToast(`A/R 3-Way matching completed! ${result.matches_created} matches, ${result.anomalies_created} anomalies.`, 'success');
         await Promise.all([
           loadARMatches(companyId),
           loadARAnomalies(companyId),
           loadInvoices(companyId)
         ]);
       } else {
-        alert(result.error || 'Matching failed. Please try again.');
+        showToast(result.error || 'Matching failed. Please try again.', 'error');
       }
     } catch (error) {
       console.error('Error running match:', error);
-      alert('Error running 3-way match.');
+      showToast('Error running 3-way match.', 'error');
     } finally {
       setMatching(false);
     }
   };
 
   const handleUploadDN = async () => {
-    if (!selectedFile || !companyId) return;
+    if (!companyId) {
+      showToast('Company ID is missing. Please refresh the page.', 'error');
+      return;
+    }
+
+    // Validate file before upload
+    const fileValidation = validateFile(selectedFile);
+    if (!fileValidation.isValid) {
+      showToast(fileValidation.error || 'Invalid file', 'error');
+      return;
+    }
 
     setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('data', selectedFile);
-      formData.append('company_id', companyId);
-      formData.append('context', 'ar'); // Mark as A/R delivery note
+    
+    const result = await safeApiCall(
+      async () => {
+        const formData = new FormData();
+        formData.append('data', selectedFile!);
+        formData.append('company_id', companyId);
+        formData.append('context', 'ar');
 
-      // Use our API route instead of calling n8n directly
-      // This ensures the DN is saved with correct A/R fields (customer_id, context='ar')
-      const response = await fetch('/api/ar/upload-delivery-note', {
-        method: 'POST',
-        body: formData
-      });
+        const response = await fetch('/api/ar/upload-delivery-note', {
+          method: 'POST',
+          body: formData
+        });
 
-      const result = await response.json();
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: `Server error ${response.status}` }));
+          throw new Error(errorData.error || `Upload failed with status ${response.status}`);
+        }
 
-      if (response.ok && result.success) {
-        alert('Delivery Note uploaded successfully!');
-        setShowUploadDNModal(false);
-        setSelectedFile(null);
-        
-        // Wait a bit more for database to be fully updated, then reload
-        setTimeout(async () => {
-          await loadDeliveryNotes(companyId);
-        }, 2000);
-      } else {
-        alert(result.error || 'Upload failed. Please try again.');
+        return await response.json();
+      },
+      { onError: (error) => showToast(error, 'error') }
+    );
+
+    if (result.success) {
+      showToast('Delivery Note uploaded successfully!', 'success');
+      setShowUploadDNModal(false);
+      setSelectedFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
-    } catch (error) {
-      console.error('Upload error:', error);
-      alert('Error uploading delivery note.');
+      
+      // Wait a bit more for database to be fully updated, then reload
+      setTimeout(async () => {
+        await loadDeliveryNotes(companyId);
+      }, 2000);
     }
 
     setUploading(false);
+  };
+
+  const loadCustomersAndPOs = async () => {
+    if (!companyId) return;
+
+    try {
+      // Load customers
+      const { data: customers } = await supabase
+        .from('customers')
+        .select('id, name, company_name')
+        .eq('company_id', companyId)
+        .order('company_name', { ascending: true });
+
+      setAvailableCustomers(customers || []);
+
+      // Load all A/R POs (those with customer_id) for the company
+      const { data: pos } = await supabase
+        .from('purchase_orders')
+        .select('id, po_number, customer_id')
+        .eq('company_id', companyId)
+        .not('customer_id', 'is', null)
+        .order('po_number', { ascending: false });
+
+      setAvailablePOs(pos || []);
+
+      // Load all invoices for the company (for "Link to Invoice" dropdown)
+      const { data: invs } = await supabase
+        .from('invoices')
+        .select('id, invoice_number, customer_id, po_id')
+        .eq('company_id', companyId)
+        .order('invoice_date', { ascending: false });
+
+      setAvailableInvoices(invs || []);
+    } catch (error) {
+      console.error('Error loading customers/POs/invoices:', error);
+    }
+  };
+
+  const generateDNNumber = async () => {
+    if (!companyId) return;
+    
+    try {
+      // Generate DN number client-side
+      const { data: existingDNs } = await supabase
+        .from('delivery_notes')
+        .select('dn_number')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .limit(100);
+
+      let maxNumber = 0;
+      const currentYear = new Date().getFullYear();
+      const pattern = new RegExp(`DN-${currentYear}-(\\d+)`, 'i');
+
+      if (existingDNs) {
+        existingDNs.forEach((dn: any) => {
+          if (dn.dn_number) {
+            const match = dn.dn_number.match(pattern);
+            if (match) {
+              const numValue = parseInt(match[1], 10);
+              if (numValue > maxNumber) {
+                maxNumber = numValue;
+              }
+            }
+          }
+        });
+      }
+
+      const nextNumber = maxNumber + 1;
+      const generatedNumber = `DN-${currentYear}-${String(nextNumber).padStart(3, '0')}`;
+      
+      setDnFormData(prev => ({ ...prev, dn_number: generatedNumber }));
+      setDnNumberGenerated(true);
+    } catch (error) {
+      console.error('Error generating DN number:', error);
+      // Fallback to timestamp-based number
+      const currentYear = new Date().getFullYear();
+      const timestamp = Date.now().toString().slice(-6);
+      const fallbackNumber = `DN-${currentYear}-${timestamp}`;
+      setDnFormData(prev => ({ ...prev, dn_number: fallbackNumber }));
+      setDnNumberGenerated(true);
+    }
+  };
+
+  useEffect(() => {
+    if (showCreateDNModal && companyId) {
+      loadCustomersAndPOs();
+      // Auto-generate DN number when modal opens
+      if (!dnFormData.dn_number) {
+        generateDNNumber();
+      }
+    }
+  }, [showCreateDNModal, companyId]);
+
+  const handleCreateDN = async () => {
+    if (!companyId) {
+      showToast('Company ID is missing. Please refresh the page.', 'error');
+      return;
+    }
+
+    if (!dnFormData.customer_id) {
+      showToast('Please select a customer or invoice', 'error');
+      return;
+    }
+
+    if (!dnFormData.dn_number || dnFormData.dn_number.trim() === '') {
+      showToast('Please enter a delivery note number', 'error');
+      return;
+    }
+
+    if (!dnFormData.delivery_date) {
+      showToast('Please select a delivery date', 'error');
+      return;
+    }
+
+    setCreatingDN(true);
+
+    const result = await safeApiCall(
+      async () => {
+        const response = await fetch('/api/ar/create-delivery-note', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            company_id: companyId,
+            invoice_id: dnFormData.invoice_id || null,
+            customer_id: dnFormData.customer_id,
+            po_id: dnFormData.po_id || null,
+            dn_number: dnFormData.dn_number.trim(),
+            delivery_date: dnFormData.delivery_date,
+            received_by: dnFormData.received_by || null,
+            context: 'ar',
+            line_items: dnFormData.line_items
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: `Server error ${response.status}` }));
+          throw new Error(errorData.error || `Failed with status ${response.status}`);
+        }
+
+        return await response.json();
+      },
+      { onError: (error) => showToast(error, 'error') }
+    );
+
+    if (result.success) {
+      showToast('Delivery Note created successfully!', 'success');
+      const res = result.data as { warning?: string } | undefined;
+      if (res?.warning) showToast(res.warning, 'error');
+      setShowCreateDNModal(false);
+      setDnFormData({
+        invoice_id: '',
+        customer_id: '',
+        po_id: '',
+        dn_number: '',
+        delivery_date: new Date().toISOString().split('T')[0],
+        received_by: '',
+        line_items: []
+      });
+      setDnNumberGenerated(false);
+      
+      // Reload delivery notes and invoices
+      setTimeout(async () => {
+        await loadDeliveryNotes(companyId);
+        await loadInvoices(companyId);
+      }, 1000);
+    }
+
+    setCreatingDN(false);
+  };
+
+  const handleInvoiceSelection = async (invoiceId: string) => {
+    if (!invoiceId) {
+      setDnFormData((prev) => ({
+        ...prev,
+        invoice_id: '',
+        customer_id: '',
+        po_id: '',
+        delivery_date: new Date().toISOString().split('T')[0],
+        line_items: []
+      }));
+      return;
+    }
+
+    if (!companyId) return;
+
+    try {
+      const { data: inv, error } = await supabase
+        .from('invoices')
+        .select('id, customer_id, po_id, invoice_date, extraction_data')
+        .eq('id', invoiceId)
+        .eq('company_id', companyId)
+        .single();
+
+      if (error || !inv) {
+        showToast('Could not load invoice details', 'error');
+        return;
+      }
+
+      const lineItems = (inv.extraction_data?.lineItems || []).map((item: any) => ({
+        description: item.description || item.item_name || '',
+        quantity: typeof item.quantity === 'number' ? item.quantity : parseFloat(item.quantity) || 0,
+        unit_price: typeof item.unit_price === 'number' ? item.unit_price : parseFloat(item.unit_price) || 0,
+        item_number: item.item_number || item.item_name,
+        unit_of_measure: item.unit_of_measure || 'pcs'
+      }));
+
+      setDnFormData((prev) => ({
+        ...prev,
+        invoice_id: invoiceId,
+        customer_id: inv.customer_id || '',
+        po_id: inv.po_id || '',
+        delivery_date: inv.invoice_date || new Date().toISOString().split('T')[0],
+        line_items: lineItems
+      }));
+    } catch (err) {
+      console.error('Error loading invoice for DN prefill:', err);
+      showToast('Could not load invoice details', 'error');
+    }
+  };
+
+  const addDNLineItem = () => {
+    setDnFormData({
+      ...dnFormData,
+      line_items: [...dnFormData.line_items, { description: '', quantity: 1, unit_price: 0 }]
+    });
+  };
+
+  const removeDNLineItem = (index: number) => {
+    setDnFormData({
+      ...dnFormData,
+      line_items: dnFormData.line_items.filter((_, i) => i !== index)
+    });
+  };
+
+  const updateDNLineItem = (index: number, field: string, value: any) => {
+    const updated = [...dnFormData.line_items];
+    updated[index] = { ...updated[index], [field]: value };
+    setDnFormData({ ...dnFormData, line_items: updated });
   };
 
   const filterPOs = () => {
@@ -600,76 +906,225 @@ function InvoicesPageContent() {
   };
 
   const handleUploadPO = async () => {
-    if (!selectedFile || !companyId) return;
+    if (!companyId) {
+      showToast('Company ID is missing. Please refresh the page.', 'error');
+      return;
+    }
+
+    // Validate file before upload
+    const fileValidation = validateFile(selectedFile);
+    if (!fileValidation.isValid) {
+      showToast(fileValidation.error || 'Invalid file', 'error');
+      return;
+    }
+
+    if (!process.env.NEXT_PUBLIC_N8N_URL) {
+      showToast('N8N server URL is not configured', 'error');
+      return;
+    }
 
     setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('data', selectedFile);
-      formData.append('company_id', companyId);
+    
+    const result = await safeApiCall(
+      async () => {
+        const formData = new FormData();
+        formData.append('data', selectedFile!);
+        formData.append('company_id', companyId);
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-purchase-order`, {
-        method: 'POST',
-        body: formData
-      });
+        const response = await fetchWithTimeout(
+          `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-purchase-order`,
+          {
+            method: 'POST',
+            body: formData
+          },
+          120000 // 2 minute timeout for file processing
+        );
 
-      if (response.ok) {
-        alert('Purchase Order uploaded successfully!');
-        setShowUploadPOModal(false);
-        setSelectedFile(null);
+        // Read response body first (can only read once)
+        const responseText = await response.text();
         
-        // Wait a bit for the webhook to process and save to database
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        // Check HTTP status
+        if (!response.ok) {
+          let errorMessage = `Upload failed with status ${response.status}`;
+          // Try to parse as JSON
+          try {
+            const errorJson = JSON.parse(responseText);
+            errorMessage = errorJson.error || errorJson.message || responseText || errorMessage;
+          } catch {
+            errorMessage = responseText || errorMessage;
+          }
+          throw new Error(errorMessage);
+        }
+
+        // Even if HTTP 200, check response body for n8n errors
+        let responseData: any = { success: true };
+        const lowerText = responseText.toLowerCase();
         
-        // Reload pending POs
-        await loadPendingPOs(companyId);
-      } else {
-        const errorText = await response.text();
-        console.error('Upload failed:', errorText);
-        alert('Upload failed. Please try again.');
+        // Check for error keywords in response (n8n might return 200 with error in body)
+        if (lowerText.includes('error') || 
+            lowerText.includes('duplicate') ||
+            lowerText.includes('failed') ||
+            lowerText.includes('already exists') ||
+            lowerText.includes('duplicate')) {
+          // Try to parse as JSON for structured error
+          try {
+            responseData = JSON.parse(responseText);
+          } catch {
+            // If not JSON, throw with the text
+            throw new Error(responseText || 'Upload failed - n8n returned an error');
+          }
+        } else {
+          // Try to parse JSON response
+          try {
+            responseData = JSON.parse(responseText);
+          } catch {
+            // If not JSON and no error keywords, assume success
+            responseData = { success: true };
+          }
+        }
+
+        // Check if n8n returned an error in the response body
+        if (responseData.error || responseData.errors || responseData.message?.toLowerCase().includes('error')) {
+          const errorMsg = responseData.error || 
+                          responseData.message ||
+                          (Array.isArray(responseData.errors) ? responseData.errors.map((e: any) => e.message || e.detail || e).join('. ') : 'Unknown error');
+          throw new Error(errorMsg);
+        }
+
+        // Get initial PO count before upload
+        const { count: initialPOCount } = await supabase
+          .from('purchase_orders')
+          .select('*', { count: 'exact', head: true })
+          .eq('company_id', companyId);
+
+        // Wait for n8n to fully process and save to database
+        // Poll database to verify NEW PO was created (max 30 seconds)
+        let attempts = 0;
+        const maxAttempts = 15; // 15 attempts * 2 seconds = 30 seconds max
+        let poCreated = false;
+
+        while (attempts < maxAttempts && !poCreated) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+          // Check if a NEW PO was created (count increased)
+          const { count: currentPOCount } = await supabase
+            .from('purchase_orders')
+            .select('*', { count: 'exact', head: true })
+            .eq('company_id', companyId);
+
+          if (currentPOCount && currentPOCount > (initialPOCount || 0)) {
+            poCreated = true;
+          }
+          attempts++;
+        }
+
+        if (!poCreated) {
+          throw new Error('Upload completed but no new PO was found in database. The file may be a duplicate or n8n encountered an error. Please check n8n logs.');
+        }
+
+        return { success: true };
+      },
+      { onError: (error) => showToast(error, 'error') }
+    );
+
+    if (result.success) {
+      showToast('Purchase Order uploaded successfully!', 'success');
+      setShowUploadPOModal(false);
+      setSelectedFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
-    } catch (error) {
-      console.error('Upload error:', error);
-      alert('Error uploading purchase order.');
+      
+      // Wait a bit for the webhook to process and save to database
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Reload pending POs
+      await loadPendingPOs(companyId);
     }
 
     setUploading(false);
   };
 
   const handleUploadInvoice = async () => {
-    if (!selectedFile || !companyId) return;
+    if (!companyId) {
+      showToast('Company ID is missing. Please refresh the page.', 'error');
+      return;
+    }
+
+    // Validate file before upload
+    const fileValidation = validateFile(selectedFile);
+    if (!fileValidation.isValid) {
+      showToast(fileValidation.error || 'Invalid file', 'error');
+      return;
+    }
+
+    if (!process.env.NEXT_PUBLIC_N8N_URL) {
+      showToast('N8N server URL is not configured', 'error');
+      return;
+    }
 
     setUploading(true);
-    try {
-      const formData = new FormData();
-      formData.append('data', selectedFile);
-      formData.append('company_id', companyId);
+    
+    const result = await safeApiCall(
+      async () => {
+        const formData = new FormData();
+        formData.append('data', selectedFile!);
+        formData.append('company_id', companyId);
 
-      const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-invoice`, {
-        method: 'POST',
-        body: formData
-      });
+        const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-invoice`, {
+          method: 'POST',
+          body: formData
+        });
 
-      if (response.ok) {
-        alert('Invoice uploaded successfully!');
-        setShowUploadInvoiceModal(false);
-        setSelectedFile(null);
-        await loadInvoices(companyId);
-      } else {
-        alert('Upload failed. Please try again.');
+        if (!response.ok) {
+          let errorMessage = `Upload failed with status ${response.status}`;
+          try {
+            const errorText = await response.text();
+            errorMessage = errorText || errorMessage;
+          } catch {
+            // Use default error message
+          }
+          throw new Error(errorMessage);
+        }
+
+        return { success: true };
+      },
+      { onError: (error) => showToast(error, 'error') }
+    );
+
+    if (result.success) {
+      showToast('Invoice uploaded successfully!', 'success');
+      setShowUploadInvoiceModal(false);
+      setSelectedFile(null);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
       }
-    } catch (error) {
-      console.error('Upload error:', error);
-      alert('Error uploading invoice.');
+      await loadInvoices(companyId);
     }
 
     setUploading(false);
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setSelectedFile(e.target.files[0]);
+    const file = e.target.files?.[0];
+    if (!file) {
+      setSelectedFile(null);
+      return;
     }
+
+    // Validate file immediately on selection
+    const validation = validateFile(file);
+    if (!validation.isValid) {
+      showToast(validation.error || 'Invalid file', 'error');
+      setSelectedFile(null);
+      if (e.target) {
+        e.target.value = ''; // Clear the input
+      }
+      return;
+    }
+
+    setSelectedFile(file);
+    showToast(`File selected: ${file.name}`, 'success', 2000);
   };
 
   const handleDownloadInvoice = async (invoice: Invoice) => {
@@ -1105,6 +1560,13 @@ function InvoicesPageContent() {
                 </div>
                 <div className="flex gap-3">
                   <button
+                    onClick={() => setShowCreateDNModal(true)}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Create DN
+                  </button>
+                  <button
                     onClick={() => setShowUploadDNModal(true)}
                     className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
                   >
@@ -1112,6 +1574,7 @@ function InvoicesPageContent() {
                     Upload DN
                   </button>
                   <button
+                    type="button"
                     onClick={handleRun3WayMatch}
                     disabled={matching}
                     className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2 disabled:bg-gray-400"
@@ -1153,6 +1616,19 @@ function InvoicesPageContent() {
 
             {/* Content */}
             <div className="flex-1 overflow-y-auto p-6">
+              {matchRunResult != null && (
+                <div className="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center gap-3">
+                  <CheckCircle className="w-6 h-6 text-green-600 shrink-0" />
+                  <div>
+                    <p className="font-medium text-green-800">3-Way match completed</p>
+                    <p className="text-sm text-green-700">
+                      {matchRunResult.matches} match{matchRunResult.matches !== 1 ? 'es' : ''} created/updated
+                      {matchRunResult.anomalies > 0 && `, ${matchRunResult.anomalies} anomal${matchRunResult.anomalies !== 1 ? 'ies' : 'y'} found`}.
+                      See cards below and the Matches tab.
+                    </p>
+                  </div>
+                </div>
+              )}
               {matchingTab === 'overview' && (
                 <div className="max-w-7xl mx-auto">
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
@@ -1222,13 +1698,13 @@ function InvoicesPageContent() {
                                 {dn.customers?.company_name || dn.customers?.name || 'Unknown'}
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-600">
-                                {new Date(dn.dn_date).toLocaleDateString('en-CA')}
+                                {(dn.delivery_date || dn.dn_date) ? new Date((dn.delivery_date || dn.dn_date) as string).toLocaleDateString('en-CA') : '-'}
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-600">
                                 {dn.po_id ? 'Linked' : '-'}
                               </td>
                               <td className="px-4 py-3 text-sm text-gray-900 text-right">
-                                {dn.amount ? parseFloat(dn.amount).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '-'}
+                                {(dn.amount != null && dn.amount !== '') ? parseFloat(String(dn.amount)).toLocaleString('en-US', { minimumFractionDigits: 2 }) : (dn.extraction_data?.amount != null ? parseFloat(String(dn.extraction_data.amount)).toLocaleString('en-US', { minimumFractionDigits: 2 }) : '-')}
                               </td>
                             </tr>
                           ))
@@ -1787,6 +2263,256 @@ function InvoicesPageContent() {
                     <>
                       <Upload className="w-4 h-4" />
                       Upload DN
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Delivery Note Modal */}
+      {showCreateDNModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full mx-4 my-8">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-xl font-bold text-gray-900">Create Delivery Note</h3>
+                <button
+                  onClick={() => {
+                    setShowCreateDNModal(false);
+                    setDnFormData({
+                      invoice_id: '',
+                      customer_id: '',
+                      po_id: '',
+                      dn_number: '',
+                      delivery_date: new Date().toISOString().split('T')[0],
+                      received_by: '',
+                      line_items: []
+                    });
+                    setDnNumberGenerated(false);
+                  }}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition"
+                >
+                  <X className="w-5 h-5 text-gray-600" />
+                </button>
+              </div>
+
+              <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-2">
+                {/* Invoice Selection (to link DN to invoice and prefill data) */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Link to Invoice (Optional - will prefill data)
+                  </label>
+                  <select
+                    value={dnFormData.invoice_id}
+                    onChange={(e) => handleInvoiceSelection(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">No invoice (create standalone DN)</option>
+                    {availableInvoices.map((invoice) => (
+                      <option key={invoice.id} value={invoice.id}>
+                        {invoice.invoice_number}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Selecting an invoice will auto-fill customer, PO, date, and line items
+                  </p>
+                </div>
+
+                {/* Customer Selection */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Customer <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    value={dnFormData.customer_id}
+                    onChange={(e) => {
+                      setDnFormData({ ...dnFormData, customer_id: e.target.value, po_id: '' });
+                    }}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    required
+                    disabled={!!dnFormData.invoice_id}
+                  >
+                    <option value="">Select a customer</option>
+                    {availableCustomers.map((customer) => (
+                      <option key={customer.id} value={customer.id}>
+                        {customer.company_name || customer.name}
+                      </option>
+                    ))}
+                  </select>
+                  {dnFormData.invoice_id && (
+                    <p className="text-xs text-gray-500 mt-1">Customer is set from selected invoice</p>
+                  )}
+                </div>
+
+                {/* PO Selection (optional) */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Purchase Order (Optional)
+                  </label>
+                  <select
+                    value={dnFormData.po_id}
+                    onChange={(e) => setDnFormData({ ...dnFormData, po_id: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    disabled={!dnFormData.customer_id || !!dnFormData.invoice_id}
+                  >
+                    <option value="">No PO (standalone DN)</option>
+                    {availablePOs
+                      .filter((po) => !dnFormData.customer_id || po.customer_id === dnFormData.customer_id)
+                      .map((po) => (
+                        <option key={po.id} value={po.id}>
+                          {po.po_number}
+                        </option>
+                      ))}
+                  </select>
+                  {dnFormData.invoice_id && (
+                    <p className="text-xs text-gray-500 mt-1">PO is set from selected invoice</p>
+                  )}
+                </div>
+
+                {/* DN Number - auto-generated, read-only in A/R */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Delivery Note Number <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={dnFormData.dn_number}
+                    readOnly
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-700 cursor-not-allowed"
+                    placeholder="DN-2026-001"
+                    required
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Auto-generated (read-only)
+                  </p>
+                </div>
+
+                {/* Delivery Date */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Delivery Date <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={dnFormData.delivery_date}
+                    onChange={(e) => setDnFormData({ ...dnFormData, delivery_date: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    required
+                  />
+                </div>
+
+                {/* Received By */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Received By (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={dnFormData.received_by}
+                    onChange={(e) => setDnFormData({ ...dnFormData, received_by: e.target.value })}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    placeholder="Name of person who received"
+                  />
+                </div>
+
+                {/* Line Items */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-sm font-medium text-gray-700">
+                      Line Items (Optional)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={addDNLineItem}
+                      className="text-sm text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add Item
+                    </button>
+                  </div>
+                  {dnFormData.line_items.length > 0 && (
+                    <div className="space-y-2 border border-gray-200 rounded-lg p-3">
+                      {dnFormData.line_items.map((item, index) => (
+                        <div key={index} className="flex gap-2 items-start">
+                          <div className="flex-1 grid grid-cols-3 gap-2">
+                            <input
+                              type="text"
+                              value={item.description}
+                              onChange={(e) => updateDNLineItem(index, 'description', e.target.value)}
+                              className="px-3 py-2 border border-gray-300 rounded text-sm"
+                              placeholder="Description"
+                            />
+                            <input
+                              type="number"
+                              value={item.quantity}
+                              onChange={(e) => updateDNLineItem(index, 'quantity', parseFloat(e.target.value) || 0)}
+                              className="px-3 py-2 border border-gray-300 rounded text-sm"
+                              placeholder="Qty"
+                              min="0"
+                              step="0.01"
+                            />
+                            <input
+                              type="number"
+                              value={item.unit_price}
+                              onChange={(e) => updateDNLineItem(index, 'unit_price', parseFloat(e.target.value) || 0)}
+                              className="px-3 py-2 border border-gray-300 rounded text-sm"
+                              placeholder="Unit Price"
+                              min="0"
+                              step="0.01"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeDNLineItem(index)}
+                            className="p-2 text-red-600 hover:bg-red-50 rounded"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex gap-3 mt-6 pt-4 border-t border-gray-200">
+                <button
+                  onClick={() => {
+                    setShowCreateDNModal(false);
+                    setDnFormData({
+                      invoice_id: '',
+                      customer_id: '',
+                      po_id: '',
+                      dn_number: '',
+                      delivery_date: new Date().toISOString().split('T')[0],
+                      received_by: '',
+                      line_items: []
+                    });
+                    setDnNumberGenerated(false);
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateDN}
+                  disabled={creatingDN || !dnFormData.customer_id || !dnFormData.dn_number || !dnFormData.delivery_date}
+                  className="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {creatingDN ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4" />
+                      Create DN
                     </>
                   )}
                 </button>

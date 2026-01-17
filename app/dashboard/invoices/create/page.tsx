@@ -2,6 +2,14 @@
 
 import { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useToast } from '@/lib/toast';
+import { 
+  validateRequired, 
+  validatePositiveNumber, 
+  validateDueDateAfterInvoiceDate,
+  validateLineItems 
+} from '@/lib/validation';
+import { getErrorMessage, safeApiCall } from '@/lib/error-handling';
 import { supabase } from '@/lib/supabase';
 import { ArrowLeft, Plus, Trash2, Loader2, X, Calendar, Upload, Paperclip, ChevronDown } from 'lucide-react';
 import Link from 'next/link';
@@ -66,6 +74,7 @@ interface WafeqTaxRate {
 function CreateInvoicePageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { showToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -82,6 +91,7 @@ function CreateInvoicePageContent() {
     currency: 'SAR',
     purchase_order: '',
     purchase_order_id: '',
+    customer_po_reference: '',
     reference: '',
     project: '',
     warehouse: '',
@@ -637,44 +647,76 @@ function CreateInvoicePageContent() {
     setError('');
     setSubmitting(true);
 
-    // Validation
-    if (!formData.customer_id) {
-      setError('Please select a customer');
+    // Comprehensive validation
+    const customerValidation = validateRequired(formData.customer_id, 'Customer');
+    if (!customerValidation.isValid) {
+      showToast(customerValidation.error || 'Please select a customer', 'error');
       setSubmitting(false);
       return;
     }
 
-    if (!formData.invoice_number.trim()) {
-      setError('Please enter an invoice number');
+    const invoiceNumberValidation = validateRequired(formData.invoice_number.trim(), 'Invoice number');
+    if (!invoiceNumberValidation.isValid) {
+      showToast(invoiceNumberValidation.error || 'Please enter an invoice number', 'error');
       setSubmitting(false);
       return;
     }
 
-    if (lineItems.some(item => !item.description.trim() || item.quantity <= 0 || item.unit_price <= 0)) {
-      setError('Please fill in all required line item fields (Description, Quantity, Price) with valid values');
+    const dateValidation = validateRequired(formData.invoice_date, 'Invoice date');
+    if (!dateValidation.isValid) {
+      showToast(dateValidation.error || 'Please select an invoice date', 'error');
       setSubmitting(false);
       return;
     }
 
-    try {
-      // Step 1: Get customer's Wafeq ID
-      const { data: customerData } = await supabase
-        .from('customers')
-        .select('wafeq_id')
-        .eq('id', formData.customer_id)
-        .single();
+    const dueDateValidation = validateDueDateAfterInvoiceDate(formData.invoice_date, formData.due_date);
+    if (!dueDateValidation.isValid) {
+      showToast(dueDateValidation.error || 'Due date must be on or after invoice date', 'error');
+      setSubmitting(false);
+      return;
+    }
 
-      if (!customerData?.wafeq_id) {
-        throw new Error('Customer is not synced with Wafeq. Please sync the customer first.');
-      }
+    // Validate line items
+    const lineItemsValidation = validateLineItems(lineItems);
+    if (!lineItemsValidation.isValid) {
+      showToast(lineItemsValidation.error || 'Please check your line items', 'error');
+      setSubmitting(false);
+      return;
+    }
 
-      // Step 2: Create invoice in Wafeq first (with retry logic for duplicate invoice numbers)
-      let currentInvoiceNumber = formData.invoice_number.trim();
-      let wafeqResponse;
-      let retryCount = 0;
-      const maxRetries = 5;
+    // Additional validation: check each line item has description
+    const hasEmptyDescriptions = lineItems.some(item => !item.description.trim());
+    if (hasEmptyDescriptions) {
+      showToast('All line items must have a description', 'error');
+      setSubmitting(false);
+      return;
+    }
 
-      while (retryCount < maxRetries) {
+    // Use safeApiCall for all API operations
+    const result = await safeApiCall(
+      async () => {
+        // Step 1: Get customer's Wafeq ID
+        const { data: customerData, error: customerError } = await supabase
+          .from('customers')
+          .select('wafeq_id')
+          .eq('id', formData.customer_id)
+          .single();
+
+        if (customerError) {
+          throw new Error(getErrorMessage(customerError));
+        }
+
+        if (!customerData?.wafeq_id) {
+          throw new Error('Customer is not synced with Wafeq. Please sync the customer first.');
+        }
+
+        // Step 2: Create invoice in Wafeq first (with retry logic for duplicate invoice numbers)
+        let currentInvoiceNumber = formData.invoice_number.trim();
+        let wafeqResponse: Response | undefined;
+        let retryCount = 0;
+        const maxRetries = 5;
+
+        while (retryCount < maxRetries) {
         wafeqResponse = await fetch('/api/wafeq/invoices', {
           method: 'POST',
           headers: {
@@ -712,122 +754,132 @@ function CreateInvoicePageContent() {
           })
         });
 
-        if (wafeqResponse.ok) {
-          break; // Success, exit retry loop
-        }
-
-        const errorData = await wafeqResponse.json();
-        
-        // Check if it's a duplicate invoice number error
-        const isDuplicateError = errorData.error?.includes('duplicate_invoice_number') ||
-                                 errorData.errors?.some((e: any) => e.code === 'invalid' && e.detail === 'duplicate_invoice_number');
-        
-        if (isDuplicateError && retryCount < maxRetries - 1) {
-          // Auto-increment invoice number and retry
-          const match = currentInvoiceNumber.match(/INV-(\d+)/i);
-          if (match) {
-            const currentNum = parseInt(match[1], 10);
-            currentInvoiceNumber = `INV-${(currentNum + 1).toString().padStart(4, '0')}`;
-            retryCount++;
-            console.log(`Invoice number already exists, trying: ${currentInvoiceNumber}`);
-            // Update form data with new invoice number
-            setFormData(prev => ({ ...prev, invoice_number: currentInvoiceNumber }));
-            continue;
+          if (wafeqResponse.ok) {
+            break; // Success, exit retry loop
           }
+
+          const errorData = await wafeqResponse.json();
+          
+          // Check if it's a duplicate invoice number error
+          const isDuplicateError = errorData.error?.includes('duplicate_invoice_number') ||
+                                   errorData.errors?.some((e: any) => e.code === 'invalid' && e.detail === 'duplicate_invoice_number');
+          
+          if (isDuplicateError && retryCount < maxRetries - 1) {
+            // Auto-increment invoice number and retry
+            const match = currentInvoiceNumber.match(/INV-(\d+)/i);
+            if (match) {
+              const currentNum = parseInt(match[1], 10);
+              currentInvoiceNumber = `INV-${(currentNum + 1).toString().padStart(4, '0')}`;
+              retryCount++;
+              console.log(`Invoice number already exists, trying: ${currentInvoiceNumber}`);
+              // Update form data with new invoice number
+              setFormData(prev => ({ ...prev, invoice_number: currentInvoiceNumber }));
+              continue;
+            }
+          }
+          
+          // If not a duplicate error or max retries reached, throw error
+          throw new Error(getErrorMessage(errorData));
         }
+
+        if (!wafeqResponse || !wafeqResponse.ok) {
+          const errorData = await wafeqResponse?.json().catch(() => ({}));
+          throw new Error(getErrorMessage(errorData) || 'Failed to create invoice in Wafeq after retries');
+        }
+
+        const wafeqResult = await wafeqResponse.json();
+        const wafeqInvoice = wafeqResult.invoice || wafeqResult;
+        const wafeqId = wafeqResult.wafeq_id || wafeqInvoice.id;
         
-        // If not a duplicate error or max retries reached, throw error
-        throw new Error(errorData.error || 'Failed to create invoice in Wafeq');
-      }
-
-      if (!wafeqResponse || !wafeqResponse.ok) {
-        const errorData = await wafeqResponse?.json();
-        throw new Error(errorData?.error || 'Failed to create invoice in Wafeq after retries');
-      }
-
-      const wafeqResult = await wafeqResponse!.json();
-      const wafeqInvoice = wafeqResult.invoice || wafeqResult;
-      const wafeqId = wafeqResult.wafeq_id || wafeqInvoice.id;
-      
-      // Update invoice number in form data if it was changed during retry
-      if (currentInvoiceNumber !== formData.invoice_number.trim()) {
-        setFormData(prev => ({ ...prev, invoice_number: currentInvoiceNumber }));
-      }
-
-      if (!wafeqId) {
-        throw new Error('Wafeq did not return an invoice ID');
-      }
-
-      // Step 3: Save invoice to Supabase with Wafeq data
-      const subtotal = calculateSubtotal();
-      const vat = calculateVAT();
-      const total = calculateTotal(); // This is subtotal + vat
-
-      // Calculate total amount (amount + tax_amount)
-      // According to schema: amount is numeric NOT NULL, tax_amount is numeric (nullable)
-      const totalAmount = subtotal + vat;
-      
-      const invoiceData: any = {
-        company_id: companyId,
-        customer_id: formData.customer_id,
-        invoice_number: currentInvoiceNumber, // Use the final invoice number (may have been incremented during retry)
-        invoice_date: formData.invoice_date,
-        due_date: formData.due_date,
-        currency: formData.currency || 'SAR', // Default to SAR per schema
-        amount: totalAmount, // Total amount (subtotal + tax) - numeric type
-        tax_amount: vat, // Tax amount - numeric type (nullable in schema)
-        status: 'pending', // Default per schema
-        wafeq_invoice_id: wafeqId, // Column name is wafeq_invoice_id (text type)
-        po_id: formData.purchase_order_id || null, // Link to purchase order (run add_po_id_to_invoices.sql migration first)
-        extraction_data: {
-          // Store additional data in extraction_data (jsonb type)
-          subtotal: subtotal,
-          total_amount: totalAmount, // Same as amount, stored for reference
-          lineItems: lineItems.map(item => ({
-            item_name: item.item_name,
-            description: item.description,
-            account: item.account,
-            quantity: item.quantity,
-            unit_price: item.unit_price,
-            tax_rate: item.tax_rate,
-            discount: item.discount,
-            amount: item.amount
-          }))
+        // Update invoice number in form data if it was changed during retry
+        if (currentInvoiceNumber !== formData.invoice_number.trim()) {
+          setFormData(prev => ({ ...prev, invoice_number: currentInvoiceNumber }));
         }
-      };
-      
-      // Store optional fields in extraction_data (columns don't exist in schema)
-      if (formData.reference && formData.reference.trim()) {
-        invoiceData.extraction_data.reference = formData.reference.trim();
-      }
-      if (formData.purchase_order && formData.purchase_order.trim()) {
-        invoiceData.extraction_data.purchase_order = formData.purchase_order.trim();
-      }
-      if (formData.purchase_order_id) {
-        invoiceData.extraction_data.purchase_order_id = formData.purchase_order_id;
-      }
-      if (formData.notes && formData.notes.trim()) {
-        invoiceData.extraction_data.notes = formData.notes.trim();
-      }
 
-      const { data: savedInvoice, error: supabaseError } = await supabase
-        .from('invoices')
-        .insert(invoiceData)
-        .select()
-        .single();
+        if (!wafeqId) {
+          throw new Error('Wafeq did not return an invoice ID');
+        }
 
-      if (supabaseError) {
-        console.error('Error saving invoice to Supabase:', supabaseError);
-        throw new Error(`Failed to save invoice: ${supabaseError.message}`);
-      }
+        // Step 3: Save invoice to Supabase with Wafeq data
+        const subtotal = calculateSubtotal();
+        const vat = calculateVAT();
+        const total = calculateTotal(); // This is subtotal + vat
 
+        // Calculate total amount (amount + tax_amount)
+        // According to schema: amount is numeric NOT NULL, tax_amount is numeric (nullable)
+        const totalAmount = subtotal + vat;
+        
+        const invoiceData: any = {
+          company_id: companyId,
+          customer_id: formData.customer_id,
+          invoice_number: currentInvoiceNumber, // Use the final invoice number (may have been incremented during retry)
+          invoice_date: formData.invoice_date,
+          due_date: formData.due_date,
+          currency: formData.currency || 'SAR', // Default to SAR per schema
+          amount: totalAmount, // Total amount (subtotal + tax) - numeric type
+          tax_amount: vat, // Tax amount - numeric type (nullable in schema)
+          status: 'pending', // Default per schema
+          wafeq_invoice_id: wafeqId, // Column name is wafeq_invoice_id (text type)
+          po_id: formData.purchase_order_id || null, // Link to purchase order (run add_po_id_to_invoices.sql migration first)
+          extraction_data: {
+            // Store additional data in extraction_data (jsonb type)
+            subtotal: subtotal,
+            total_amount: totalAmount, // Same as amount, stored for reference
+            lineItems: lineItems.map(item => ({
+              item_name: item.item_name,
+              description: item.description,
+              account: item.account,
+              quantity: item.quantity,
+              unit_price: item.unit_price,
+              tax_rate: item.tax_rate,
+              discount: item.discount,
+              amount: item.amount
+            }))
+          }
+        };
+        
+        // Store optional fields in extraction_data (columns don't exist in schema)
+        if (formData.customer_po_reference && formData.customer_po_reference.trim()) {
+          invoiceData.extraction_data.customer_po_reference = formData.customer_po_reference.trim();
+        }
+        if (formData.reference && formData.reference.trim()) {
+          invoiceData.extraction_data.reference = formData.reference.trim();
+        }
+        if (formData.purchase_order && formData.purchase_order.trim()) {
+          invoiceData.extraction_data.purchase_order = formData.purchase_order.trim();
+        }
+        if (formData.purchase_order_id) {
+          invoiceData.extraction_data.purchase_order_id = formData.purchase_order_id;
+        }
+        if (formData.notes && formData.notes.trim()) {
+          invoiceData.extraction_data.notes = formData.notes.trim();
+        }
+
+        const { data: savedInvoice, error: supabaseError } = await supabase
+          .from('invoices')
+          .insert(invoiceData)
+          .select()
+          .single();
+
+        if (supabaseError) {
+          console.error('Error saving invoice to Supabase:', supabaseError);
+          throw new Error(getErrorMessage(supabaseError));
+        }
+
+        return savedInvoice;
+      },
+      { onError: (error) => showToast(error, 'error') }
+    );
+
+    if (result.success && result.data) {
+      showToast('Invoice created successfully!', 'success');
       // Step 4: Redirect to invoices list page (invoices tab)
-      router.push(`/dashboard/invoices?id=${savedInvoice.id}`);
-    } catch (err: any) {
-      console.error('Error creating invoice:', err);
-      setError(err.message || 'Failed to create invoice. Please try again.');
-      setSubmitting(false);
+      router.push(`/dashboard/invoices?id=${result.data.id}`);
+    } else {
+      setError(result.error || 'Failed to create invoice. Please try again.');
     }
+
+    setSubmitting(false);
   };
 
   if (loading) {
@@ -1011,13 +1063,25 @@ function CreateInvoicePageContent() {
                     </div>
 
                     <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Customer PO Reference</label>
+                      <input
+                        type="text"
+                        value={formData.customer_po_reference}
+                        onChange={(e) => setFormData({ ...formData, customer_po_reference: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="Customer's PO number (e.g., PO-2026-001)"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">The customer's purchase order reference number</p>
+                    </div>
+
+                    <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Reference</label>
                       <input
                         type="text"
                         value={formData.reference}
                         onChange={(e) => setFormData({ ...formData, reference: e.target.value })}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        placeholder="Optional"
+                        placeholder="Optional internal reference"
                       />
                     </div>
 

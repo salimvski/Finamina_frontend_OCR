@@ -3,7 +3,10 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { ArrowLeft, Save, Loader2, Plus, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, Plus, Trash2, X, Shield, CreditCard, AlertCircle, CheckCircle } from 'lucide-react';
+import { useToast } from '@/lib/toast';
+import { safeApiCall } from '@/lib/error-handling';
+import Link from 'next/link';
 
 interface LineItem {
   item_name?: string;
@@ -34,11 +37,18 @@ export default function EditInvoicePage() {
   const router = useRouter();
   const params = useParams();
   const invoiceId = params.id as string;
+  const { showToast } = useToast();
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [invoice, setInvoice] = useState<any>(null);
   const [customer, setCustomer] = useState<any>(null);
+  
+  // 3-Way Check and Payment Status
+  const [checkingQuality, setCheckingQuality] = useState(false);
+  const [checkingPayment, setCheckingPayment] = useState(false);
+  const [qualityCheckResult, setQualityCheckResult] = useState<any>(null);
+  const [paymentStatus, setPaymentStatus] = useState<any>(null);
   
   const [formData, setFormData] = useState({
     due_date: '',
@@ -324,6 +334,90 @@ export default function EditInvoicePage() {
     }
   };
 
+  const handleQualityCheck = async () => {
+    if (!invoice) return;
+    
+    setCheckingQuality(true);
+    setQualityCheckResult(null);
+
+    const result = await safeApiCall(
+      async () => {
+        if (!process.env.NEXT_PUBLIC_N8N_URL) {
+          throw new Error('N8N server URL is not configured');
+        }
+
+        const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/ar-three-way-check`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ invoice_id: invoice.id })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => `Server error ${response.status}`);
+          throw new Error(errorText);
+        }
+
+        return await response.json();
+      },
+      { onError: (error) => showToast(error, 'error') }
+    );
+
+    const data = result.success ? result.data : null;
+    if (data && typeof data === 'object') {
+      setQualityCheckResult(data);
+      if (data.matched) {
+        showToast('✅ All items matched successfully!', 'success');
+      } else if (data.warnings && data.warnings.length > 0) {
+        showToast(`⚠️ ${data.warnings.length} warning(s) found`, 'warning');
+      } else {
+        showToast('Quality check completed', 'info');
+      }
+    }
+
+    setCheckingQuality(false);
+  };
+
+  const handlePaymentCheck = async () => {
+    if (!invoice) return;
+
+    setCheckingPayment(true);
+    setPaymentStatus(null);
+
+    const result = await safeApiCall(
+      async () => {
+        const response = await fetch('/api/ar/check-invoice-payment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ invoice_id: invoice.id })
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.error || `Server error ${response.status}`);
+        return data;
+      },
+      { onError: (error) => showToast(error, 'error') }
+    );
+
+    const data = result.success ? result.data : null;
+    if (data && typeof data === 'object') {
+      setPaymentStatus(data);
+      if (data.matched) {
+        if (data.updated) {
+          showToast('Invoice marked as paid and payment linked.', 'success');
+          await loadInvoice();
+        } else if (data.alreadyPaid) {
+          showToast('Invoice is already paid.', 'info');
+        } else {
+          showToast('Payment found in bank transactions.', 'success');
+        }
+      } else {
+        showToast(data.message || 'No matching payment found.', 'info');
+      }
+    }
+
+    setCheckingPayment(false);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -353,12 +447,149 @@ export default function EditInvoicePage() {
             <ArrowLeft className="w-5 h-5" />
             Back to Invoices
           </button>
-          <h1 className="text-3xl font-bold text-gray-900">Edit Invoice</h1>
-          <p className="text-sm text-gray-600 mt-1">Invoice {invoice.invoice_number}</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">Edit Invoice</h1>
+              <p className="text-sm text-gray-600 mt-1">Invoice {invoice.invoice_number}</p>
+            </div>
+            <div className="flex gap-3">
+              <Link
+                href={`/dashboard/deliveries/create?po_id=${invoice.po_id || ''}&invoice_id=${invoice.id}`}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Create DN
+              </Link>
+              <button
+                onClick={handleQualityCheck}
+                disabled={checkingQuality}
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {checkingQuality ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Checking...
+                  </>
+                ) : (
+                  <>
+                    <Shield className="w-4 h-4" />
+                    Run Quality Check
+                  </>
+                )}
+              </button>
+              <button
+                onClick={handlePaymentCheck}
+                disabled={checkingPayment}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {checkingPayment ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Checking...
+                  </>
+                ) : (
+                  <>
+                    <CreditCard className="w-4 h-4" />
+                    Check Payment Status
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {/* Quality Check Results */}
+        {qualityCheckResult && (
+          <div className={`mb-6 rounded-lg p-4 border-2 ${
+            qualityCheckResult.matched 
+              ? 'bg-green-50 border-green-200' 
+              : qualityCheckResult.warnings?.length > 0
+              ? 'bg-yellow-50 border-yellow-200'
+              : 'bg-gray-50 border-gray-200'
+          }`}>
+            <div className="flex items-start gap-3">
+              {qualityCheckResult.matched ? (
+                <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-5 h-5 text-yellow-600 mt-0.5" />
+              )}
+              <div className="flex-1">
+                <h3 className="font-semibold text-gray-900 mb-2">
+                  {qualityCheckResult.matched ? '✅ All Items Matched' : '⚠️ Quality Check Results'}
+                </h3>
+                {qualityCheckResult.warnings && qualityCheckResult.warnings.length > 0 && (
+                  <div className="space-y-2">
+                    {qualityCheckResult.warnings.map((warning: string, idx: number) => (
+                      <div key={idx} className="text-sm text-gray-700">• {warning}</div>
+                    ))}
+                  </div>
+                )}
+                {qualityCheckResult.mismatches && (
+                  <div className="mt-2 text-sm text-gray-700">
+                    <strong>Mismatches:</strong>
+                    <pre className="mt-1 text-xs bg-white p-2 rounded border overflow-auto">
+                      {JSON.stringify(qualityCheckResult.mismatches, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+              <button
+                onClick={() => setQualityCheckResult(null)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Payment Status Results */}
+        {paymentStatus && (
+          <div className={`mb-6 rounded-lg p-4 border-2 ${
+            paymentStatus.matched
+              ? 'bg-green-50 border-green-200'
+              : 'bg-gray-50 border-gray-200'
+          }`}>
+            <div className="flex items-start gap-3">
+              {paymentStatus.matched ? (
+                <CheckCircle className="w-5 h-5 text-green-600 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-5 h-5 text-gray-600 mt-0.5" />
+              )}
+              <div className="flex-1">
+                <h3 className="font-semibold text-gray-900 mb-2">
+                  {paymentStatus.matched
+                    ? (paymentStatus.updated ? '✅ Payment matched and invoice marked as paid' : paymentStatus.alreadyPaid ? '✅ Invoice already paid' : '✅ Payment found')
+                    : 'No payment found'}
+                </h3>
+                {paymentStatus.matched && paymentStatus.transaction && (
+                  <div className="text-sm text-gray-700 space-y-1">
+                    <div>Amount: {paymentStatus.transaction.amount}</div>
+                    <div>Date: {paymentStatus.transaction.transaction_date || paymentStatus.transaction.date}</div>
+                    {(paymentStatus.transaction.description || paymentStatus.transaction.reference) && (
+                      <div>Reference: {paymentStatus.transaction.description || paymentStatus.transaction.reference}</div>
+                    )}
+                    {paymentStatus.paid_at && (
+                      <div className="text-green-700 font-medium">Invoice paid_at: {new Date(paymentStatus.paid_at).toLocaleDateString()}</div>
+                    )}
+                  </div>
+                )}
+                {paymentStatus.message && !paymentStatus.transaction && (
+                  <div className="text-sm text-gray-600">{paymentStatus.message}</div>
+                )}
+              </div>
+              <button
+                onClick={() => setPaymentStatus(null)}
+                className="text-gray-400 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         <form onSubmit={handleSave} className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-6">
           
           {/* Read-only Section */}

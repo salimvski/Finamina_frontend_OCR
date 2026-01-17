@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-server';
 
 // A/R 3-Way Matching API Route
 // This implements matching logic without needing n8n
@@ -17,7 +17,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Step 1: Load all invoices with PO and DN links
-    const { data: invoices, error: invoicesError } = await supabase
+    const { data: invoices, error: invoicesError } = await supabaseAdmin
       .from('invoices')
       .select(`
         id,
@@ -53,7 +53,7 @@ export async function POST(request: NextRequest) {
       if (!invoice.po_id) continue;
 
       // Load PO
-      const { data: po, error: poError } = await supabase
+      const { data: po, error: poError } = await supabaseAdmin
         .from('purchase_orders')
         .select('id, po_number, amount, tax_amount, customer_id, supplier_id, extraction_data')
         .eq('id', invoice.po_id)
@@ -68,22 +68,21 @@ export async function POST(request: NextRequest) {
       // Load DN if linked
       let dn = null;
       if (invoice.dn_id) {
-        const { data: dnData, error: dnError } = await supabase
+        const { data: dnData, error: dnError } = await supabaseAdmin
           .from('delivery_notes')
           .select('id, dn_number, amount, tax_amount, customer_id, po_id, extraction_data')
           .eq('id', invoice.dn_id)
-          .eq('context', 'ar')
-          .single();
+          .maybeSingle();
 
         if (!dnError && dnData) {
           dn = dnData;
         }
       }
 
-      // Calculate amounts
+      // Calculate amounts (DN amount can be in amount or extraction_data.amount)
       const poAmount = parseFloat(po.amount || '0');
       const invoiceAmount = parseFloat(invoice.amount?.toString() || '0');
-      const dnAmount = dn ? parseFloat(dn.amount || '0') : null;
+      const dnAmount = dn ? parseFloat(String(dn.amount ?? dn.extraction_data?.amount ?? '0')) : null;
 
       // Determine match type
       const matchType = dn ? '3-way' : '2-way';
@@ -111,7 +110,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Check if match already exists
-      const { data: existingMatch } = await supabase
+      const { data: existingMatch } = await supabaseAdmin
         .from('ar_three_way_matches')
         .select('id')
         .eq('invoice_id', invoice.id)
@@ -136,7 +135,7 @@ export async function POST(request: NextRequest) {
 
       if (existingMatch) {
         // Update existing match
-        const { error: updateError } = await supabase
+        const { error: updateError } = await supabaseAdmin
           .from('ar_three_way_matches')
           .update(matchData)
           .eq('id', existingMatch.id);
@@ -148,7 +147,7 @@ export async function POST(request: NextRequest) {
         }
       } else {
         // Create new match
-        const { error: insertError } = await supabase
+        const { error: insertError } = await supabaseAdmin
           .from('ar_three_way_matches')
           .insert(matchData);
 
@@ -162,7 +161,7 @@ export async function POST(request: NextRequest) {
       // Create anomalies if there are discrepancies
       if (!isPerfectMatch) {
         // Check if anomaly already exists
-        const { data: existingAnomaly } = await supabase
+        const { data: existingAnomaly } = await supabaseAdmin
           .from('ar_anomalies')
           .select('id')
           .eq('invoice_id', invoice.id)
@@ -192,13 +191,13 @@ export async function POST(request: NextRequest) {
 
         if (existingAnomaly) {
           // Update existing anomaly
-          await supabase
+          await supabaseAdmin
             .from('ar_anomalies')
             .update(anomalyData)
             .eq('id', existingAnomaly.id);
         } else {
           // Create new anomaly
-          const { error: anomalyError } = await supabase
+          const { error: anomalyError } = await supabaseAdmin
             .from('ar_anomalies')
             .insert(anomalyData);
 
@@ -218,7 +217,7 @@ export async function POST(request: NextRequest) {
         invoiceMatchStatus = 'dn_matched';
       }
 
-      await supabase
+      await supabaseAdmin
         .from('invoices')
         .update({ match_status: invoiceMatchStatus })
         .eq('id', invoice.id);

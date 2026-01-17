@@ -9,6 +9,9 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useToast } from '@/lib/toast';
+import { validateFile } from '@/lib/validation';
+import { getErrorMessage, safeApiCall, fetchWithTimeout } from '@/lib/error-handling';
 
 interface SupplierInvoice {
     id: string;
@@ -36,6 +39,7 @@ interface SupplierInvoice {
 function SupplierInvoicesContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
+    const { showToast } = useToast();
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState(false);
     const [companyId, setCompanyId] = useState('');
@@ -187,36 +191,83 @@ function SupplierInvoicesContent() {
     };
 
     const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            setSelectedFile(e.target.files[0]);
+        const file = e.target.files?.[0];
+        if (!file) {
+            setSelectedFile(null);
+            return;
         }
+
+        // Validate file immediately on selection
+        const validation = validateFile(file);
+        if (!validation.isValid) {
+            showToast(validation.error || 'Invalid file', 'error');
+            setSelectedFile(null);
+            if (e.target) {
+                e.target.value = '';
+            }
+            return;
+        }
+
+        setSelectedFile(file);
+        showToast(`File selected: ${file.name}`, 'success', 2000);
     };
 
     const handleUpload = async () => {
-        if (!selectedFile || !companyId) return;
+        if (!companyId) {
+            showToast('Company ID is missing. Please refresh the page.', 'error');
+            return;
+        }
+
+        // Validate file before upload
+        const fileValidation = validateFile(selectedFile);
+        if (!fileValidation.isValid) {
+            showToast(fileValidation.error || 'Invalid file', 'error');
+            return;
+        }
+
+        if (!process.env.NEXT_PUBLIC_N8N_URL) {
+            showToast('N8N server URL is not configured', 'error');
+            return;
+        }
 
         setUploading(true);
-        try {
-            const formData = new FormData();
-            formData.append('data', selectedFile);
-            formData.append('company_id', companyId);
+        
+        const result = await safeApiCall(
+            async () => {
+                const formData = new FormData();
+                formData.append('data', selectedFile!);
+                formData.append('company_id', companyId);
 
-            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-supplier-invoice`, {
-                method: 'POST',
-                body: formData
-            });
+                const response = await fetchWithTimeout(
+                    `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-supplier-invoice`,
+                    {
+                        method: 'POST',
+                        body: formData
+                    },
+                    120000 // 2 minute timeout
+                );
 
-            if (response.ok) {
-                alert('Supplier invoice uploaded successfully!');
-                setShowUploadModal(false);
-                setSelectedFile(null);
-                await loadInvoices(companyId);
-            } else {
-                alert('Upload failed. Please try again.');
-            }
-        } catch (error) {
-            console.error('Upload error:', error);
-            alert('Error uploading invoice.');
+                if (!response.ok) {
+                    let errorMessage = `Upload failed with status ${response.status}`;
+                    try {
+                        const errorText = await response.text();
+                        errorMessage = errorText || errorMessage;
+                    } catch {
+                        // Use default error message
+                    }
+                    throw new Error(getErrorMessage({ status: response.status, message: errorMessage }));
+                }
+
+                return { success: true };
+            },
+            { onError: (error) => showToast(error, 'error') }
+        );
+
+        if (result.success) {
+            showToast('Supplier invoice uploaded successfully!', 'success');
+            setShowUploadModal(false);
+            setSelectedFile(null);
+            await loadInvoices(companyId);
         }
 
         setUploading(false);

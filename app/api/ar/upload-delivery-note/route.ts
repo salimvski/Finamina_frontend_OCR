@@ -1,15 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { validateFile } from '@/lib/validation';
+import { getErrorMessage, fetchWithTimeout } from '@/lib/error-handling';
 
 export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData();
-    const file = formData.get('data') as File;
+    const file = formData.get('data') as File | null;
     const company_id = formData.get('company_id') as string;
     const context = formData.get('context') as string || 'ar'; // Default to A/R
 
-    if (!file || !company_id) {
-      return NextResponse.json({ success: false, error: 'File and company_id are required' }, { status: 400 });
+    // Validate required fields
+    if (!company_id) {
+      return NextResponse.json(
+        { success: false, error: 'Company ID is required' },
+        { status: 400 }
+      );
+    }
+
+    // Validate file
+    const fileValidation = validateFile(file);
+    if (!fileValidation.isValid) {
+      return NextResponse.json(
+        { success: false, error: fileValidation.error },
+        { status: 400 }
+      );
+    }
+    if (!file) {
+      return NextResponse.json({ success: false, error: 'File is required' }, { status: 400 });
     }
 
     // Step 1: Call n8n webhook to process the DN
@@ -19,17 +37,52 @@ export async function POST(request: NextRequest) {
     n8nFormData.append('context', context);
 
     const n8nUrl = `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-delivery-note`;
+    
+    if (!n8nUrl || !process.env.NEXT_PUBLIC_N8N_URL) {
+      return NextResponse.json(
+        { success: false, error: 'N8N server URL is not configured' },
+        { status: 500 }
+      );
+    }
+
     console.log('Calling n8n webhook:', n8nUrl);
 
-    const n8nResponse = await fetch(n8nUrl, {
-      method: 'POST',
-      body: n8nFormData
-    });
+    // Call n8n with timeout
+    let n8nResponse: Response;
+    try {
+      n8nResponse = await fetchWithTimeout(n8nUrl, {
+        method: 'POST',
+        body: n8nFormData
+      }, 60000); // 60 second timeout for file processing
+    } catch (error: any) {
+      const errorMessage = getErrorMessage(error);
+      console.error('N8N webhook error:', errorMessage);
+      return NextResponse.json(
+        { success: false, error: errorMessage },
+        { status: 500 }
+      );
+    }
 
     if (!n8nResponse.ok) {
-      const errorText = await n8nResponse.text();
-      console.error('N8N webhook error:', errorText);
-      return NextResponse.json({ success: false, error: 'Failed to process delivery note via n8n' }, { status: 500 });
+      let errorMessage = 'Failed to process delivery note';
+      try {
+        const errorText = await n8nResponse.text();
+        console.error('N8N webhook error response:', errorText);
+        // Try to parse as JSON
+        try {
+          const errorJson = JSON.parse(errorText);
+          errorMessage = errorJson.error || errorJson.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+      } catch {
+        errorMessage = `Server returned error ${n8nResponse.status}`;
+      }
+      
+      return NextResponse.json(
+        { success: false, error: errorMessage },
+        { status: n8nResponse.status }
+      );
     }
 
     // Step 2: Wait a bit for n8n to process and save to database
@@ -104,11 +157,15 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ success: true, message: 'Delivery note uploaded and processed successfully' });
+    return NextResponse.json({ 
+      success: true, 
+      message: 'Delivery note uploaded and processed successfully' 
+    });
   } catch (error: any) {
     console.error('Error in upload-delivery-note API:', error);
+    const errorMessage = getErrorMessage(error);
     return NextResponse.json(
-      { success: false, error: error.message || 'Failed to upload delivery note' },
+      { success: false, error: errorMessage },
       { status: 500 }
     );
   }

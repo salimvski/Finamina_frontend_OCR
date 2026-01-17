@@ -9,6 +9,9 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useToast } from '@/lib/toast';
+import { validateFile } from '@/lib/validation';
+import { getErrorMessage, safeApiCall, fetchWithTimeout } from '@/lib/error-handling';
 
 interface UploadModal {
     isOpen: boolean;
@@ -23,6 +26,7 @@ interface UploadModal {
 function ProcurementPageContent() {
     const router = useRouter();
     const searchParams = useSearchParams();
+    const { showToast } = useToast();
     const [loading, setLoading] = useState(true);
     const [companyId, setCompanyId] = useState('');
     const [activeTab, setActiveTab] = useState<'overview' | 'pos' | 'deliveries' | 'matches' | 'anomalies'>('overview');
@@ -206,7 +210,28 @@ function ProcurementPageContent() {
 
     const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
-        if (!file || !companyId || !uploadModal.type) return;
+        
+        if (!file || !companyId || !uploadModal.type) {
+            if (!file) {
+                showToast('Please select a file', 'error');
+            }
+            return;
+        }
+
+        // Validate file before upload
+        const fileValidation = validateFile(file);
+        if (!fileValidation.isValid) {
+            showToast(fileValidation.error || 'Invalid file', 'error');
+            if (e.target) {
+                e.target.value = '';
+            }
+            return;
+        }
+
+        if (!process.env.NEXT_PUBLIC_N8N_URL) {
+            showToast('N8N server URL is not configured', 'error');
+            return;
+        }
 
         setUploadModal(prev => ({
             ...prev,
@@ -216,42 +241,60 @@ function ProcurementPageContent() {
             message: 'Uploading file...'
         }));
 
-        const formData = new FormData();
-        formData.append('data', file);
-        formData.append('company_id', companyId);
+        const result = await safeApiCall(
+            async () => {
+                const formData = new FormData();
+                formData.append('data', file);
+                formData.append('company_id', companyId);
 
-        try {
-            await new Promise(resolve => setTimeout(resolve, 500));
+                await new Promise(resolve => setTimeout(resolve, 500));
 
-            setUploadModal(prev => ({
-                ...prev,
-                stage: 'ocr',
-                message: 'Reading document with AI...'
-            }));
+                setUploadModal(prev => ({
+                    ...prev,
+                    stage: 'ocr',
+                    message: 'Reading document with AI...'
+                }));
 
-            const endpoint = uploadModal.type === 'po' 
-                ? 'upload-purchase-order' 
-                : 'upload-delivery-note';
+                const endpoint = uploadModal.type === 'po' 
+                    ? 'upload-purchase-order' 
+                    : 'upload-delivery-note';
 
-            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/${endpoint}`, {
-                method: 'POST',
-                body: formData
-            });
+                const response = await fetchWithTimeout(
+                    `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/${endpoint}`,
+                    {
+                        method: 'POST',
+                        body: formData
+                    },
+                    120000 // 2 minute timeout for file processing
+                );
 
-            const responseText = await response.text();
+                if (!response.ok) {
+                    const errorText = await response.text().catch(() => `Server error ${response.status}`);
+                    throw new Error(getErrorMessage({ status: response.status, message: errorText }));
+                }
 
-            if (!response.ok || responseText.includes('error')) {
-                throw new Error('Upload failed');
-            }
+                setUploadModal(prev => ({
+                    ...prev,
+                    stage: 'saving',
+                    message: 'Saving to database...'
+                }));
 
-            setUploadModal(prev => ({
-                ...prev,
-                stage: 'saving',
-                message: 'Saving to database...'
-            }));
+                await new Promise(resolve => setTimeout(resolve, 2000));
 
-            await new Promise(resolve => setTimeout(resolve, 500));
+                return { success: true };
+            },
+            { onError: (error) => {
+                setUploadModal(prev => ({
+                    ...prev,
+                    stage: 'error',
+                    message: 'Upload failed',
+                    error: error
+                }));
+                showToast(error, 'error');
+            }}
+        );
 
+        if (result.success) {
             setUploadModal(prev => ({
                 ...prev,
                 stage: 'success',
@@ -263,15 +306,7 @@ function ProcurementPageContent() {
             setTimeout(() => {
                 closeUploadModal();
             }, 2000);
-
-        } catch (error: any) {
-            setUploadModal(prev => ({
-                ...prev,
-                stage: 'error',
-                message: 'Upload failed',
-                error: error.message || 'An error occurred'
-            }));
-
+        } else {
             setTimeout(() => {
                 closeUploadModal();
             }, 5000);

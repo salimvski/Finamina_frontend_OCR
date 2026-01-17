@@ -520,7 +520,7 @@ function InvoicesPageContent() {
 
     setMatching(true);
     try {
-      const response = await fetch('/api/ar/three-way-match', {
+      const response = await fetch('/three-way-match', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ company_id: companyId })
@@ -569,7 +569,7 @@ function InvoicesPageContent() {
         formData.append('company_id', companyId);
         formData.append('context', 'ar');
 
-        const response = await fetch('/api/ar/upload-delivery-note', {
+        const response = await fetch('/upload-delivery-note', {
           method: 'POST',
           body: formData
         });
@@ -718,7 +718,7 @@ function InvoicesPageContent() {
 
     const result = await safeApiCall(
       async () => {
-        const response = await fetch('/api/ar/create-delivery-note', {
+        const response = await fetch('/create-delivery-note', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -911,12 +911,23 @@ function InvoicesPageContent() {
       return;
     }
 
+    if (!selectedFile) {
+      showToast('Please select a file to upload', 'error');
+      return;
+    }
+
     // Validate file before upload
     const fileValidation = validateFile(selectedFile);
     if (!fileValidation.isValid) {
       showToast(fileValidation.error || 'Invalid file', 'error');
       return;
     }
+
+    console.log('Upload PO: Starting upload', { 
+      fileName: selectedFile.name, 
+      fileSize: selectedFile.size, 
+      companyId 
+    });
 
     setUploading(true);
     
@@ -926,8 +937,10 @@ function InvoicesPageContent() {
         formData.append('data', selectedFile!);
         formData.append('company_id', companyId);
 
+        console.log('Upload PO: Sending request to API');
+
         const response = await fetchWithTimeout(
-          '/api/ar/upload-purchase-order',
+          '/upload-purchase-order',
           {
             method: 'POST',
             body: formData
@@ -937,6 +950,11 @@ function InvoicesPageContent() {
 
         // Read response body first (can only read once)
         const responseText = await response.text();
+        console.log('Upload PO: API response', { 
+          status: response.status, 
+          ok: response.ok, 
+          body: responseText.substring(0, 200) 
+        });
         
         // Check HTTP status
         if (!response.ok) {
@@ -945,8 +963,10 @@ function InvoicesPageContent() {
           try {
             const errorJson = JSON.parse(responseText);
             errorMessage = errorJson.error || errorJson.message || responseText || errorMessage;
+            console.error('Upload PO: API error', errorJson);
           } catch {
             errorMessage = responseText || errorMessage;
+            console.error('Upload PO: API error (non-JSON)', responseText);
           }
           throw new Error(errorMessage);
         }
@@ -1035,6 +1055,15 @@ function InvoicesPageContent() {
       
       // Reload pending POs
       await loadPendingPOs(companyId);
+    } else {
+      // Ensure error is shown even if safeApiCall didn't show it
+      if (result.error) {
+        console.error('Upload PO: Error from safeApiCall', result.error);
+        showToast(result.error, 'error');
+      } else {
+        console.error('Upload PO: Unknown error', result);
+        showToast('Upload failed. Please try again.', 'error');
+      }
     }
 
     setUploading(false);
@@ -1061,7 +1090,7 @@ function InvoicesPageContent() {
         formData.append('data', selectedFile!);
         formData.append('company_id', companyId);
 
-        const response = await fetch('/api/ar/upload-invoice', {
+        const response = await fetch('/upload-invoice', {
           method: 'POST',
           body: formData
         });

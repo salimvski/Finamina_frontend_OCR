@@ -262,7 +262,7 @@ function CreateDeliveryNotePageContent() {
         const po = purchaseOrders.find(p => p.id === selectedPO);
         if (!po) throw new Error('Purchase order not found');
 
-        const response = await fetch('/api/ar/create-delivery-note', {
+        const response = await fetch('/create-delivery-note', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

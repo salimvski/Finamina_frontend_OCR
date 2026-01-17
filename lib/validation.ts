@@ -16,8 +16,17 @@ export function validateFile(file: File | null | undefined): ValidationResult {
     return { isValid: false, error: 'Please select a file' };
   }
 
-  // Check file type
-  if (!ALLOWED_FILE_TYPES.includes(file.type)) {
+  // Check file type (MIME type)
+  const mimeTypeValid = ALLOWED_FILE_TYPES.includes(file.type);
+  
+  // Fallback: check file extension if MIME type is missing or invalid
+  const fileName = file.name.toLowerCase();
+  const hasValidExtension = fileName.endsWith('.pdf') || 
+                           fileName.endsWith('.jpg') || 
+                           fileName.endsWith('.jpeg') || 
+                           fileName.endsWith('.png');
+
+  if (!mimeTypeValid && !hasValidExtension) {
     return {
       isValid: false,
       error: 'Invalid file type. Please upload a PDF or image file (JPG, PNG)',

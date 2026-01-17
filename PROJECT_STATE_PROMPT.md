@@ -48,9 +48,9 @@ scripts/                   # Excluded from tsconfig; run with tsx
 
 1. **Upload PO** (n8n) → `purchase_orders` (A/R: `customer_id` set).
 2. **Create Invoice** (`/dashboard/invoices/create`): Wafeq + Supabase; links `po_id`; optional `customer_po_reference` in `extraction_data`.
-3. **Create DN** (modal on `/dashboard/invoices` or `/dashboard/deliveries/create`): `POST /api/ar/create-delivery-note`. If `invoice_id` is sent, backend sets `invoices.dn_id`. DN uses `delivery_date`; `extraction_data.amount` from line items.
-4. **Run 3‑Way Match** (Invoices → 3‑Way Match tab): `POST /api/ar/three-way-match` with `company_id`. Reads `invoices` with `po_id`, optionally `dn_id`; loads PO and DN; writes `ar_three_way_matches` and `ar_anomalies`; updates `invoices.match_status`.
-5. **Check Payment Status** (invoice edit): `POST /api/ar/check-invoice-payment` with `invoice_id`. Finds matching `bank_transactions` (amount ±tolerance, credit, date window); sets `invoices.status=paid`, `paid_at`; sets `bank_transactions.matched_invoice_id`, `is_reconciled`.
+3. **Create DN** (modal on `/dashboard/invoices` or `/dashboard/deliveries/create`): `POST /api/create-delivery-note`. If `invoice_id` is sent, backend sets `invoices.dn_id`. DN uses `delivery_date`; `extraction_data.amount` from line items.
+4. **Run 3‑Way Match** (Invoices → 3‑Way Match tab): `POST /api/three-way-match` with `company_id`. Reads `invoices` with `po_id`, optionally `dn_id`; loads PO and DN; writes `ar_three_way_matches` and `ar_anomalies`; updates `invoices.match_status`.
+5. **Check Payment Status** (invoice edit): `POST /api/check-invoice-payment` with `invoice_id`. Finds matching `bank_transactions` (amount ±tolerance, credit, date window); sets `invoices.status=paid`, `paid_at`; sets `bank_transactions.matched_invoice_id`, `is_reconciled`.
 
 ### A/P (Procurement / Suppliers)
 
@@ -98,7 +98,7 @@ scripts/                   # Excluded from tsconfig; run with tsx
 
 - **Upload PO / DN / Supplier invoice:** app sends file + `company_id` (and for DN upload: `context=ar`) to n8n; n8n OCR and inserts into Postgres.
 - **`/webhook/ar-three-way-check`:** `{ invoice_id }` – quality check PO/DN/Invoice (optional; we also have app-side 3‑way match).
-- **`/webhook/check-invoice-payment`:** superseded by `/api/ar/check-invoice-payment` which uses `bank_transactions` in Supabase.
+- **`/webhook/check-invoice-payment`:** superseded by `/api/check-invoice-payment` which uses `bank_transactions` in Supabase.
 - **`/webhook/lean-reconciliation`:** `{ company_id }` – bulk Lean sync / reconciliation.
 - **`/webhook/upload-delivery-note`:** DN PDF upload; `context` and `company_id` passed.
 

@@ -385,7 +385,7 @@ export default function EditInvoicePage() {
 
     const result = await safeApiCall(
       async () => {
-        const response = await fetch('/api/ar/check-invoice-payment', {
+        const response = await fetch('/check-invoice-payment', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ invoice_id: invoice.id })

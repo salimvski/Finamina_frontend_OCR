@@ -918,11 +918,6 @@ function InvoicesPageContent() {
       return;
     }
 
-    if (!process.env.NEXT_PUBLIC_N8N_URL) {
-      showToast('N8N server URL is not configured', 'error');
-      return;
-    }
-
     setUploading(true);
     
     const result = await safeApiCall(
@@ -932,7 +927,7 @@ function InvoicesPageContent() {
         formData.append('company_id', companyId);
 
         const response = await fetchWithTimeout(
-          `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-purchase-order`,
+          '/api/ar/upload-purchase-order',
           {
             method: 'POST',
             body: formData
@@ -1058,11 +1053,6 @@ function InvoicesPageContent() {
       return;
     }
 
-    if (!process.env.NEXT_PUBLIC_N8N_URL) {
-      showToast('N8N server URL is not configured', 'error');
-      return;
-    }
-
     setUploading(true);
     
     const result = await safeApiCall(
@@ -1071,7 +1061,7 @@ function InvoicesPageContent() {
         formData.append('data', selectedFile!);
         formData.append('company_id', companyId);
 
-        const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-invoice`, {
+        const response = await fetch('/api/ar/upload-invoice', {
           method: 'POST',
           body: formData
         });

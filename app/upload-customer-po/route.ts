@@ -5,7 +5,17 @@ const N8N_URL = process.env.NEXT_PUBLIC_N8N_URL || '';
 
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch (parseError: any) {
+      console.error('Upload Customer PO: Failed to parse FormData', parseError);
+      return NextResponse.json(
+        { success: false, error: `Failed to parse request: ${parseError.message || 'Invalid form data'}` },
+        { status: 400 }
+      );
+    }
+    
     const file = formData.get('data') as File | null;
     const companyId = formData.get('company_id') as string | null;
 
@@ -33,10 +43,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Convert n8n URL to http:// if it's https:// (for server-side calls)
-    let n8nBaseUrl = N8N_URL;
-    if (n8nBaseUrl.startsWith('https://')) {
-      n8nBaseUrl = n8nBaseUrl.replace('https://', 'http://');
+    // Validate and normalize n8n URL
+    if (!N8N_URL || !N8N_URL.trim()) {
+      console.error('Upload Customer PO: NEXT_PUBLIC_N8N_URL not configured');
+      return NextResponse.json(
+        { success: false, error: 'N8N server URL is not configured' },
+        { status: 500 }
+      );
+    }
+
+    let baseUrl = N8N_URL.trim();
+    // Remove trailing slash if present
+    if (baseUrl.endsWith('/')) {
+      baseUrl = baseUrl.slice(0, -1);
+    }
+    // Convert https:// to http:// for server-side calls
+    if (baseUrl.startsWith('https://')) {
+      baseUrl = baseUrl.replace('https://', 'http://');
     }
 
     // Prepare form data for n8n
@@ -44,8 +67,11 @@ export async function POST(request: NextRequest) {
     n8nFormData.append('data', file);
     n8nFormData.append('company_id', companyId);
 
-    // Call n8n webhook
-    const n8nResponse = await fetch(`${n8nBaseUrl}/webhook/upload-customer-po`, {
+    // Call n8n webhook - ensure /webhook/ is in the path
+    const n8nUrl = `${baseUrl}/webhook/upload-customer-po`;
+    console.log('Upload Customer PO: Calling n8n webhook:', n8nUrl);
+    
+    const n8nResponse = await fetch(n8nUrl, {
       method: 'POST',
       body: n8nFormData,
     });

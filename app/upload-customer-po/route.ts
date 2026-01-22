@@ -44,32 +44,43 @@ export async function POST(request: NextRequest) {
     }
 
     // Validate and normalize n8n URL
-    if (!N8N_URL || !N8N_URL.trim()) {
+    // Check both NEXT_PUBLIC_N8N_URL and process.env directly (for server-side)
+    const n8nUrlEnv = process.env.NEXT_PUBLIC_N8N_URL || N8N_URL || '';
+    if (!n8nUrlEnv || !n8nUrlEnv.trim()) {
       console.error('Upload Customer PO: NEXT_PUBLIC_N8N_URL not configured');
+      console.error('Upload Customer PO: Environment variable check:', {
+        N8N_URL: N8N_URL ? 'set' : 'not set',
+        processEnv: process.env.NEXT_PUBLIC_N8N_URL ? 'set' : 'not set'
+      });
       return NextResponse.json(
-        { success: false, error: 'N8N server URL is not configured' },
+        { 
+          success: false, 
+          error: 'N8N server URL is not configured. Please set NEXT_PUBLIC_N8N_URL environment variable in Vercel project settings.' 
+        },
         { status: 500 }
       );
     }
 
-    let baseUrl = N8N_URL.trim();
-    // Remove trailing slash if present
-    if (baseUrl.endsWith('/')) {
-      baseUrl = baseUrl.slice(0, -1);
-    }
-    // Convert https:// to http:// for server-side calls
+    // Force HTTP for server-side calls (server can call HTTP even if env var is HTTPS)
+    let baseUrl = n8nUrlEnv.trim();
     if (baseUrl.startsWith('https://')) {
       baseUrl = baseUrl.replace('https://', 'http://');
+    } else if (!baseUrl.startsWith('http://')) {
+      // If it doesn't start with http:// or https://, add http://
+      baseUrl = `http://${baseUrl}`;
     }
+    // Remove trailing slash if present
+    baseUrl = baseUrl.replace(/\/$/, '');
+    
+    // Call n8n webhook - ensure /webhook/ is in the path
+    const n8nUrl = `${baseUrl}/webhook/upload-customer-po`;
+    console.log('Upload Customer PO: Calling n8n webhook:', n8nUrl);
+    console.log('Upload Customer PO: Base URL from env:', n8nUrlEnv);
 
     // Prepare form data for n8n
     const n8nFormData = new FormData();
     n8nFormData.append('data', file);
     n8nFormData.append('company_id', companyId);
-
-    // Call n8n webhook - ensure /webhook/ is in the path
-    const n8nUrl = `${baseUrl}/webhook/upload-customer-po`;
-    console.log('Upload Customer PO: Calling n8n webhook:', n8nUrl);
     
     const n8nResponse = await fetch(n8nUrl, {
       method: 'POST',

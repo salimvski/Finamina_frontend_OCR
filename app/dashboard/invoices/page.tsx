@@ -249,9 +249,9 @@ function InvoicesPageContent() {
 
   const loadPendingPOs = async (company_id: string) => {
     try {
-      // Load all purchase orders (without joins to avoid errors)
+      // Load customer purchase orders (A/R context)
       const { data: allPOs, error: poError } = await supabase
-        .from('purchase_orders')
+        .from('customer_purchase_orders')
         .select('*')
         .eq('company_id', company_id)
         .order('po_date', { ascending: false });
@@ -270,73 +270,48 @@ function InvoicesPageContent() {
         return;
       }
 
-      // Load all invoices to find which POs already have invoices
-      // Check both po_id column and extraction_data.purchase_order_id
+      // Load all invoices to find which customer POs already have invoices
       const { data: allInvoices } = await supabase
         .from('invoices')
-        .select('id, invoice_number, po_id, extraction_data')
+        .select('id, invoice_number, customer_po_id')
         .eq('company_id', company_id);
 
-      // Create a map of PO ID to invoice info
-      const poToInvoiceMap = new Map<string, { id: string; invoice_number: string }>();
+      // Create a map of Customer PO ID to invoice info
+      const customerPOToInvoiceMap = new Map<string, { id: string; invoice_number: string }>();
       (allInvoices || []).forEach((inv: any) => {
-        const invoiceInfo = { id: inv.id, invoice_number: inv.invoice_number };
-        if (inv.po_id) {
-          poToInvoiceMap.set(inv.po_id, invoiceInfo);
-        }
-        // Also check extraction_data.purchase_order_id for backward compatibility
-        if (inv.extraction_data?.purchase_order_id) {
-          poToInvoiceMap.set(inv.extraction_data.purchase_order_id, invoiceInfo);
+        if (inv.customer_po_id) {
+          customerPOToInvoiceMap.set(inv.customer_po_id, { 
+            id: inv.id, 
+            invoice_number: inv.invoice_number 
+          });
         }
       });
 
-      console.log('PO to Invoice map:', Array.from(poToInvoiceMap.entries()));
-
-      // Get all customer IDs to check if supplier_id matches a customer
+      // Load customers for display
       const { data: customers } = await supabase
         .from('customers')
         .select('id, name, company_name')
         .eq('company_id', company_id);
 
-      const customerIds = new Set((customers || []).map((c: any) => c.id));
       const customerMap = new Map((customers || []).map((c: any) => [c.id, c]));
 
-      // Show ALL POs (for tracking history), but mark which ones have invoices
-      // In A/R context, we show all POs from customers
-      const allPOsWithInfo = allPOs
-        .map(po => {
-          // Check if PO has an invoice
-          const invoiceInfo = poToInvoiceMap.get(po.id);
-          const hasInvoice = !!invoiceInfo;
-          
-          // Try to find customer info
-          let customerId = po.customer_id;
-          if (!customerId && po.supplier_id && customerIds.has(po.supplier_id)) {
-            customerId = po.supplier_id;
-          }
-          
-          const customer = customerId ? customerMap.get(customerId) : null;
-          
-          return {
-            ...po,
-            customers: customer ? {
-              id: customer.id,
-              name: customer.name,
-              company_name: customer.company_name
-            } : undefined,
-            hasInvoice: hasInvoice,
-            invoiceId: invoiceInfo?.id,
-            invoiceNumber: invoiceInfo?.invoice_number
-          };
-        })
-        // Filter to only show POs from customers (for A/R)
-        .filter(po => {
-          // Show PO if it has customer_id or supplier_id matches a customer
-          if (po.customer_id) return true;
-          if (po.supplier_id && customerIds.has(po.supplier_id)) return true;
-          // Also show POs without customer/supplier (user can assign later)
-          return true;
-        });
+      // Map customer POs with invoice info and customer details
+      const allPOsWithInfo = allPOs.map(po => {
+        const invoiceInfo = customerPOToInvoiceMap.get(po.id);
+        const customer = po.customer_id ? customerMap.get(po.customer_id) : null;
+        
+        return {
+          ...po,
+          customers: customer ? {
+            id: customer.id,
+            name: customer.name,
+            company_name: customer.company_name
+          } : undefined,
+          hasInvoice: !!invoiceInfo,
+          invoiceId: invoiceInfo?.id,
+          invoiceNumber: invoiceInfo?.invoice_number
+        };
+      });
 
       console.log('All POs with info:', allPOsWithInfo.length);
       console.log('POs with invoices:', allPOsWithInfo.filter(po => po.hasInvoice).length);
@@ -923,13 +898,14 @@ function InvoicesPageContent() {
       return;
     }
 
-    console.log('Upload PO: Starting upload', { 
+    console.log('Upload Customer PO: Starting upload', { 
       fileName: selectedFile.name, 
       fileSize: selectedFile.size, 
       companyId 
     });
 
     setUploading(true);
+    showToast('Upload started. Processing workflow...', 'info');
     
     const result = await safeApiCall(
       async () => {
@@ -937,10 +913,10 @@ function InvoicesPageContent() {
         formData.append('data', selectedFile!);
         formData.append('company_id', companyId);
 
-        console.log('Upload PO: Sending request to API');
+        console.log('Upload Customer PO: Sending request to API');
 
         const response = await fetchWithTimeout(
-          '/upload-purchase-order',
+          '/upload-customer-po',
           {
             method: 'POST',
             body: formData
@@ -950,118 +926,209 @@ function InvoicesPageContent() {
 
         // Read response body first (can only read once)
         const responseText = await response.text();
-        console.log('Upload PO: API response', { 
+        console.log('Upload Customer PO: API response', { 
           status: response.status, 
           ok: response.ok, 
-          body: responseText.substring(0, 200) 
+          bodyLength: responseText.length,
+          body: responseText.substring(0, 500) 
         });
         
-        // Check HTTP status
-        if (!response.ok) {
+        // Check HTTP status - accept 200-299 and 202 (Accepted) as success
+        // 202 Accepted means the request was accepted for processing but not yet completed
+        // Also accept empty JSON {} as success for async processing
+        if (!response.ok && response.status !== 202) {
           let errorMessage = `Upload failed with status ${response.status}`;
+          let shouldThrow = true;
+          
           // Try to parse as JSON
-          try {
-            const errorJson = JSON.parse(responseText);
-            errorMessage = errorJson.error || errorJson.message || responseText || errorMessage;
-            console.error('Upload PO: API error', errorJson);
-          } catch {
-            errorMessage = responseText || errorMessage;
-            console.error('Upload PO: API error (non-JSON)', responseText);
+          if (responseText && responseText.trim()) {
+            try {
+              const errorJson = JSON.parse(responseText);
+              // Check if errorJson has meaningful error content
+              if (errorJson && Object.keys(errorJson).length > 0) {
+                // Check if it's actually an error or just an empty object
+                if (errorJson.error && typeof errorJson.error === 'string' && errorJson.error.trim()) {
+                  const errorLower = errorJson.error.toLowerCase();
+                  // "Workflow was started" is actually success
+                  if (errorLower.includes('workflow was started') || errorLower.includes('workflow started')) {
+                    console.log('Upload Customer PO: "Workflow was started" - treating as success');
+                    shouldThrow = false;
+                  } else {
+                    errorMessage = errorJson.error || errorJson.message || errorMessage;
+                    console.error('Upload Customer PO: API error (parsed)', errorJson);
+                  }
+                } else if (errorJson.message && typeof errorJson.message === 'string' && errorJson.message.trim()) {
+                  const msgLower = errorJson.message.toLowerCase();
+                  if (msgLower.includes('workflow was started') || msgLower.includes('workflow started')) {
+                    console.log('Upload Customer PO: "Workflow was started" - treating as success');
+                    shouldThrow = false;
+                  } else {
+                    errorMessage = errorJson.message || errorMessage;
+                    console.error('Upload Customer PO: API error (parsed)', errorJson);
+                  }
+                } else {
+                  // Empty object {} - treat as success for async processing
+                  console.log('Upload Customer PO: Empty JSON object - treating as success for async processing');
+                  shouldThrow = false;
+                }
+              } else {
+                // Empty object - treat as success for async processing
+                console.log('Upload Customer PO: Empty JSON object - treating as success for async processing');
+                shouldThrow = false;
+              }
+            } catch (parseError) {
+              // Not JSON - check if it's an error message
+              const lowerText = responseText.toLowerCase();
+              if (lowerText.includes('error') && !lowerText.includes('workflow')) {
+                errorMessage = responseText.trim() || errorMessage;
+                console.error('Upload Customer PO: API error (non-JSON)', responseText);
+              } else {
+                // Might be success message - proceed
+                console.log('Upload Customer PO: Non-JSON response - treating as success for async processing');
+                shouldThrow = false;
+              }
+            }
+          } else {
+            // Empty response - might be OK for async processing
+            console.log('Upload Customer PO: Empty response - treating as success for async processing');
+            shouldThrow = false;
           }
-          throw new Error(errorMessage);
+          
+          if (shouldThrow) {
+            throw new Error(errorMessage);
+          }
+        }
+        
+        // If status is 202 Accepted, treat as success and proceed with polling
+        if (response.status === 202) {
+          console.log('Upload Customer PO: Request accepted (202), proceeding with polling');
         }
 
-        // Even if HTTP 200, check response body for n8n errors
+        // Parse response - handle empty responses gracefully for async processing
         let responseData: any = { success: true };
-        const lowerText = responseText.toLowerCase();
+        let uploadedPONumber: string | null = null;
         
-        // Check for error keywords in response (n8n might return 200 with error in body)
-        if (lowerText.includes('error') || 
-            lowerText.includes('duplicate') ||
-            lowerText.includes('failed') ||
-            lowerText.includes('already exists') ||
-            lowerText.includes('duplicate')) {
-          // Try to parse as JSON for structured error
+        if (responseText && responseText.trim()) {
           try {
             responseData = JSON.parse(responseText);
-          } catch {
-            // If not JSON, throw with the text
-            throw new Error(responseText || 'Upload failed - n8n returned an error');
+            
+            // Extract PO number if available
+            if (Array.isArray(responseData) && responseData.length > 0) {
+              uploadedPONumber = responseData[0]?.po_number || null;
+            } else if (responseData.po_number) {
+              uploadedPONumber = responseData.po_number;
+            } else if (responseData.data?.po_number) {
+              uploadedPONumber = responseData.data.po_number;
+            }
+            
+            // Check for explicit errors (but ignore "Workflow was started" which is success)
+            if (responseData.error) {
+              const errorMsg = responseData.error.toLowerCase();
+              // "Workflow was started" is actually a success message from n8n
+              if (errorMsg.includes('workflow was started') || errorMsg.includes('workflow started')) {
+                console.log('Upload Customer PO: n8n returned "Workflow was started" - proceeding with polling');
+                responseData = { success: true };
+              } else {
+                throw new Error(responseData.error || 'Upload failed');
+              }
+            }
+            
+            // If response is empty object {} or has no success flag, that's OK for async processing
+            if (!responseData.success && !Array.isArray(responseData) && !responseData.data && Object.keys(responseData).length === 0) {
+              console.log('Upload Customer PO: Empty response object, proceeding with polling (async processing)');
+              responseData = { success: true };
+            }
+          } catch (parseError) {
+            // Not valid JSON - check if it's a success message
+            const lowerText = responseText.toLowerCase();
+            
+            // "Workflow was started" is a success message
+            if (lowerText.includes('workflow was started') || lowerText.includes('workflow started')) {
+              console.log('Upload Customer PO: n8n returned "Workflow was started" (non-JSON) - proceeding with polling');
+              responseData = { success: true };
+            } else if (lowerText.includes('error') && !lowerText.includes('workflow')) {
+              // Only treat as error if it's not about workflow starting
+              throw new Error(responseText || 'Upload failed - n8n returned an error');
+            } else if (lowerText.includes('failed') || lowerText.includes('duplicate')) {
+              throw new Error(responseText || 'Upload failed');
+            } else {
+              // If not an error, assume success (n8n might return plain text success message)
+              console.log('Upload Customer PO: Response is not JSON, assuming success and proceeding with polling');
+              responseData = { success: true };
+            }
           }
         } else {
-          // Try to parse JSON response
-          try {
-            responseData = JSON.parse(responseText);
-          } catch {
-            // If not JSON and no error keywords, assume success
-            responseData = { success: true };
-          }
+          // Empty response - OK for async processing, proceed with polling
+          console.log('Upload Customer PO: Empty response from API, proceeding with polling (async processing)');
+          responseData = { success: true };
         }
 
-        // Check if n8n returned an error in the response body
-        if (responseData.error || responseData.errors || responseData.message?.toLowerCase().includes('error')) {
-          const errorMsg = responseData.error || 
-                          responseData.message ||
-                          (Array.isArray(responseData.errors) ? responseData.errors.map((e: any) => e.message || e.detail || e).join('. ') : 'Unknown error');
-          throw new Error(errorMsg);
-        }
-
-        // Get initial PO count before upload
+        // Get initial Customer PO count before upload
         const { count: initialPOCount } = await supabase
-          .from('purchase_orders')
+          .from('customer_purchase_orders')
           .select('*', { count: 'exact', head: true })
           .eq('company_id', companyId);
 
-        // Wait for n8n to fully process and save to database
-        // Poll database to verify NEW PO was created (max 30 seconds)
+        showToast('Workflow started. Waiting for completion...', 'info');
+
+        // Wait for n8n workflow to complete and save to database
+        // Poll database to verify NEW Customer PO was created (max 60 seconds)
         let attempts = 0;
-        const maxAttempts = 15; // 15 attempts * 2 seconds = 30 seconds max
+        const maxAttempts = 30; // 30 attempts * 2 seconds = 60 seconds max
         let poCreated = false;
 
         while (attempts < maxAttempts && !poCreated) {
           await new Promise(resolve => setTimeout(resolve, 2000));
           
-          // Check if a NEW PO was created (count increased)
-          const { count: currentPOCount } = await supabase
-            .from('purchase_orders')
-            .select('*', { count: 'exact', head: true })
+          // Check if a NEW Customer PO was created
+          const { count: currentPOCount, data: currentPOs } = await supabase
+            .from('customer_purchase_orders')
+            .select('po_number', { count: 'exact' })
             .eq('company_id', companyId);
 
-          if (currentPOCount && currentPOCount > (initialPOCount || 0)) {
+          // If we have a PO number from response, check for that specific one
+          if (uploadedPONumber) {
+            const foundPO = currentPOs?.find((po: any) => po.po_number === uploadedPONumber);
+            if (foundPO) {
+              poCreated = true;
+              break;
+            }
+          } else if (currentPOCount && currentPOCount > (initialPOCount || 0)) {
+            // Fallback: check if count increased
             poCreated = true;
+            break;
           }
+          
           attempts++;
+          console.log(`Polling for Customer PO... attempt ${attempts}/${maxAttempts}`);
         }
 
         if (!poCreated) {
-          throw new Error('Upload completed but no new PO was found in database. The file may be a duplicate or n8n encountered an error. Please check n8n logs.');
+          throw new Error('Workflow completed but no new Customer PO was found in database. The file may be a duplicate or n8n encountered an error. Please check n8n logs.');
         }
 
-        return { success: true };
+        return { success: true, poNumber: uploadedPONumber };
       },
       { onError: (error) => showToast(error, 'error') }
     );
 
     if (result.success) {
-      showToast('Purchase Order uploaded successfully!', 'success');
+      showToast(`Customer PO uploaded successfully!${result.data?.poNumber ? ` (${result.data.poNumber})` : ''}`, 'success');
       setShowUploadPOModal(false);
       setSelectedFile(null);
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
       
-      // Wait a bit for the webhook to process and save to database
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Reload pending POs
+      // Reload pending Customer POs
       await loadPendingPOs(companyId);
     } else {
       // Ensure error is shown even if safeApiCall didn't show it
       if (result.error) {
-        console.error('Upload PO: Error from safeApiCall', result.error);
+        console.error('Upload Customer PO: Error from safeApiCall', result.error);
         showToast(result.error, 'error');
       } else {
-        console.error('Upload PO: Unknown error', result);
+        console.error('Upload Customer PO: Unknown error', result);
         showToast('Upload failed. Please try again.', 'error');
       }
     }
@@ -1370,7 +1437,7 @@ function InvoicesPageContent() {
                 className="flex-1 px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition flex items-center justify-center gap-2"
               >
                 <Upload className="w-4 h-4" />
-                Upload PO
+                Upload Customer PO
               </button>
             ) : (
               <>
@@ -2130,7 +2197,7 @@ function InvoicesPageContent() {
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full mx-4">
             <div className="p-6">
               <div className="flex items-center justify-between mb-6">
-                <h3 className="text-xl font-bold text-gray-900">Upload Purchase Order</h3>
+                <h3 className="text-xl font-bold text-gray-900">Upload Customer Purchase Order</h3>
                 <button
                   onClick={() => {
                     setShowUploadPOModal(false);
@@ -2144,7 +2211,7 @@ function InvoicesPageContent() {
 
               <div className="mb-6">
                 <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select PO File (PDF/Image)
+                  Select Customer PO File (PDF/Image)
                 </label>
                 <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-500 transition cursor-pointer">
                   <input
@@ -2198,7 +2265,7 @@ function InvoicesPageContent() {
                   ) : (
                     <>
                       <Upload className="w-4 h-4" />
-                      Upload PO
+                      Upload Customer PO
                     </>
                   )}
                 </button>

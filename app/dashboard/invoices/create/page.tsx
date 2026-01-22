@@ -21,31 +21,6 @@ interface Customer {
   email?: string;
 }
 
-interface POLineItem {
-  id: string;
-  po_id: string;
-  item_number?: string;
-  description?: string;
-  quantity: number;
-  unit_price: number;
-  total_amount: number;
-  unit_of_measurement?: string;
-}
-
-interface PurchaseOrder {
-  id: string;
-  po_number: string;
-  po_date: string;
-  currency: string;
-  amount: string;
-  tax_amount: string;
-  status: string;
-  supplier_id?: string;
-  notes?: string;
-  expected_delivery_date?: string;
-  line_items?: POLineItem[];
-}
-
 interface LineItem {
   item_name?: string; // Product/service name
   description: string;
@@ -80,8 +55,8 @@ function CreateInvoicePageContent() {
   const [error, setError] = useState('');
   const [companyId, setCompanyId] = useState('');
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>([]);
-  const [selectedPOId, setSelectedPOId] = useState('');
+  const [customerPOs, setCustomerPOs] = useState<any[]>([]);
+  const [selectedCustomerPOId, setSelectedCustomerPOId] = useState('');
   
   const [formData, setFormData] = useState({
     customer_id: '',
@@ -89,8 +64,6 @@ function CreateInvoicePageContent() {
     invoice_date: new Date().toISOString().split('T')[0],
     due_date: new Date().toISOString().split('T')[0],
     currency: 'SAR',
-    purchase_order: '',
-    purchase_order_id: '',
     customer_po_reference: '',
     reference: '',
     project: '',
@@ -115,16 +88,17 @@ function CreateInvoicePageContent() {
     loadData();
   }, []);
 
-  // Auto-select PO from URL parameter
+  // Auto-select Customer PO from URL parameter
   useEffect(() => {
-    const poIdFromUrl = searchParams.get('po_id');
-    if (poIdFromUrl && purchaseOrders.length > 0) {
-      const po = purchaseOrders.find(p => p.id === poIdFromUrl);
-      if (po) {
-        handlePOSelection(poIdFromUrl);
+    const customerPOIdFromUrl = searchParams.get('customer_po_id');
+    
+    if (customerPOIdFromUrl && customerPOs.length > 0) {
+      const customerPO = customerPOs.find(cpo => cpo.id === customerPOIdFromUrl);
+      if (customerPO) {
+        handleCustomerPOSelection(customerPOIdFromUrl);
       }
     }
-  }, [searchParams, purchaseOrders]);
+  }, [searchParams, customerPOs]);
 
   const loadData = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -143,7 +117,7 @@ function CreateInvoicePageContent() {
       setCompanyId(userData.company_id);
       await Promise.all([
         loadCustomers(userData.company_id),
-        loadPurchaseOrders(userData.company_id),
+        loadCustomerPOs(userData.company_id),
         loadWafeqOptions()
       ]);
       // Auto-generate invoice number
@@ -228,244 +202,66 @@ function CreateInvoicePageContent() {
   };
 
 
-  const loadPurchaseOrders = async (company_id: string) => {
+  const loadCustomerPOs = async (company_id: string) => {
     try {
-      // Load purchase orders that can be invoiced (delivered or partial_delivered)
-      const { data: poData, error: poError } = await supabase
-        .from('purchase_orders')
-        .select('id, po_number, po_date, currency, amount, tax_amount, status, supplier_id, notes, expected_delivery_date')
+      const { data, error } = await supabase
+        .from('customer_purchase_orders')
+        .select('id, po_number, customer_id, po_date, amount, currency, customers(name, company_name)')
         .eq('company_id', company_id)
-        .in('status', ['delivered', 'partial_delivered', 'pending'])
-        .order('po_date', { ascending: false });
+        .eq('status', 'pending')
+        .order('created_at', { ascending: false });
 
-      if (poError) {
-        console.error('Error loading purchase orders:', poError);
-        setPurchaseOrders([]);
+      if (error) {
+        console.error('Error loading customer POs:', error);
+        setCustomerPOs([]);
         return;
       }
 
-      if (!poData || poData.length === 0) {
-        setPurchaseOrders([]);
-        return;
-      }
-
-      // Load line items for all purchase orders
-      const poIds = poData.map(po => po.id);
-      console.log('Loading line items for PO IDs:', poIds);
-      const { data: lineItemsData, error: lineItemsError } = await supabase
-        .from('po_line_items')
-        .select('id, po_id, item_number, description, quantity, unit_price, total_amount, unit_of_measure, unit_of_measurement')
-        .in('po_id', poIds);
-      
-      console.log('Loaded line items data:', lineItemsData);
-      console.log('Line items error:', lineItemsError);
-
-      if (lineItemsError) {
-        console.warn('Error loading PO line items:', lineItemsError);
-        // Continue without line items
-      }
-
-      // Map purchase orders with their line items
-      const ordersWithLineItems = poData.map(po => {
-        const poLineItems = lineItemsData?.filter(item => item.po_id === po.id) || [];
-        console.log(`PO ${po.po_number} (${po.id}) has ${poLineItems.length} line items:`, poLineItems);
-        return {
-          ...po,
-          line_items: poLineItems
-        };
-      });
-
-      console.log('All purchase orders with line items:', ordersWithLineItems);
-      setPurchaseOrders(ordersWithLineItems);
+      setCustomerPOs(data || []);
     } catch (err: any) {
-      console.error('Exception loading purchase orders:', err);
-      setPurchaseOrders([]);
+      console.error('Exception loading customer POs:', err);
+      setCustomerPOs([]);
     }
   };
 
-  const handlePOSelection = async (poId: string) => {
-    setSelectedPOId(poId);
-    const selectedPO = purchaseOrders.find(po => po.id === poId);
+  const handleCustomerPOSelection = async (customerPOId: string) => {
+    setSelectedCustomerPOId(customerPOId);
+    const selectedCustomerPO = customerPOs.find(cpo => cpo.id === customerPOId);
     
-    console.log('Selected PO:', selectedPO);
-    console.log('PO Line Items:', selectedPO?.line_items);
-    console.log('Line items type:', typeof selectedPO?.line_items);
-    console.log('Is array?', Array.isArray(selectedPO?.line_items));
-    console.log('Line items length:', selectedPO?.line_items?.length);
-    
-    if (selectedPO) {
-      // Prefill invoice data from purchase order
+    if (selectedCustomerPO) {
+      // Prefill invoice data from customer PO
       setFormData(prev => ({
         ...prev,
-        purchase_order: selectedPO.po_number,
-        purchase_order_id: selectedPO.id,
-        currency: selectedPO.currency || prev.currency,
-        invoice_date: new Date().toISOString().split('T')[0], // Use today's date
-        due_date: selectedPO.expected_delivery_date 
-          ? new Date(selectedPO.expected_delivery_date).toISOString().split('T')[0]
-          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days from now
-        reference: selectedPO.po_number,
-        notes: selectedPO.notes || prev.notes
+        customer_id: selectedCustomerPO.customer_id || prev.customer_id,
+        customer_po_reference: selectedCustomerPO.po_number,
+        currency: selectedCustomerPO.currency || prev.currency,
+        invoice_date: new Date().toISOString().split('T')[0],
+        due_date: selectedCustomerPO.expected_delivery_date 
+          ? new Date(selectedCustomerPO.expected_delivery_date).toISOString().split('T')[0]
+          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        reference: selectedCustomerPO.po_number,
       }));
 
-      // Prefill line items from PO
+      // Prefill a single line item with the PO amount
       const defaultAccount = accounts.find(acc => acc.id === DEFAULT_ACCOUNT)?.id || accounts[0]?.id || DEFAULT_ACCOUNT;
       const defaultTaxRate = taxRates.find(tr => tr.id === DEFAULT_TAX_RATE)?.id || taxRates[0]?.id || DEFAULT_TAX_RATE;
+      
+      const poAmount = parseFloat(selectedCustomerPO.amount || '0');
+      const taxRateObj = taxRates.find(tr => tr.id === defaultTaxRate);
+      const taxRatePercent = taxRateObj?.rate ? taxRateObj.rate / 100 : 0.15; // Default to 15%
+      const subtotal = poAmount / (1 + taxRatePercent);
+      const taxAmount = poAmount - subtotal;
 
-      // Calculate tax rate from PO totals
-      const poAmount = parseFloat(selectedPO.amount || '0');
-      const poTaxAmount = parseFloat(selectedPO.tax_amount || '0');
-      const subtotal = poAmount - poTaxAmount;
-      const calculatedTaxRate = subtotal > 0 && poTaxAmount > 0
-        ? taxRates.find(tr => Math.abs((tr.rate || 0) - ((poTaxAmount / subtotal) * 100)) < 1)?.id
-        : null;
-
-      // Check if PO has line items in po_line_items table
-      if (selectedPO.line_items && Array.isArray(selectedPO.line_items) && selectedPO.line_items.length > 0) {
-        console.log('Using PO line items:', selectedPO.line_items);
-        // Use line items from po_line_items table
-        const poLineItems = selectedPO.line_items.map((poItem: any, index: number) => {
-          // Parse numeric values (they come as strings from database)
-          const quantity = typeof poItem.quantity === 'string' 
-            ? parseFloat(poItem.quantity) || 1 
-            : (poItem.quantity || 1);
-          
-          const unitPrice = typeof poItem.unit_price === 'string'
-            ? parseFloat(poItem.unit_price) || 0
-            : (poItem.unit_price || 0);
-          
-          const totalAmount = typeof poItem.total_amount === 'string'
-            ? parseFloat(poItem.total_amount) || (quantity * unitPrice)
-            : (poItem.total_amount || (quantity * unitPrice));
-          
-          // Extract item name from description
-          // Example: "Dell Laptop XPS 15 - i7, 16GB RAM, 512GB SSD" -> "Dell Laptop"
-          const description = poItem.description || '';
-          let itemName = '';
-          
-          if (description) {
-            // Get the part before dash or comma (main product name)
-            let productName = description.split(' - ')[0].split(',')[0].trim();
-            
-            // Extract brand/product name (first 2 words: brand + product type)
-            // "Dell Laptop XPS 15" -> "Dell Laptop"
-            // "HP Printer LaserJet Pro" -> "HP Printer"
-            // "DELL Laptop" -> "DELL Laptop"
-            const words = productName.split(/\s+/).filter((w: string) => w.length > 0);
-            if (words.length >= 2) {
-              // Take first 2 words (brand + product type)
-              itemName = words.slice(0, 2).join(' ');
-            } else if (words.length === 1) {
-              // If only one word, use it (e.g., "DELL")
-              itemName = words[0];
-            } else {
-              itemName = productName;
-            }
-          } else if (poItem.item_number && poItem.item_number !== 'N/A') {
-            itemName = poItem.item_number;
-          } else {
-            // Fallback: use a generic name
-            itemName = `Item from ${selectedPO.po_number}`;
-          }
-          
-          // Ensure item_name is not empty
-          if (!itemName || itemName.trim() === '') {
-            itemName = `Item ${index + 1}`;
-          }
-          
-          // Calculate amount with tax
-          const taxRateObj = taxRates.find(tr => tr.id === (calculatedTaxRate || defaultTaxRate));
-          const taxRatePercent = taxRateObj?.rate ? taxRateObj.rate / 100 : 0;
-          const subtotal = (quantity * unitPrice) - 0; // discount is 0
-          const amountWithTax = subtotal * (1 + taxRatePercent);
-          
-          return {
-            item_name: itemName,
-            description: description, // Use the full description from PO line item (e.g., "Dell Laptop XPS 15 - i7, 16GB RAM, 512GB SSD")
-            account: defaultAccount,
-            quantity: quantity, // Use actual quantity from PO
-            unit_price: unitPrice, // Use actual unit price from PO
-            tax_rate: calculatedTaxRate || defaultTaxRate,
-            discount: 0,
-            amount: amountWithTax
-          };
-        });
-        
-        console.log('Mapped line items:', poLineItems);
-        setLineItems(poLineItems);
-      } else {
-        // Fallback: Create a single line item with the PO total amount
-        // This should rarely happen if PO line items are loaded correctly
-        console.warn('No line items found for PO, using fallback. PO:', selectedPO);
-        console.warn('Line items check:', {
-          hasLineItems: !!selectedPO.line_items,
-          isArray: Array.isArray(selectedPO.line_items),
-          length: selectedPO.line_items?.length,
-          lineItems: selectedPO.line_items
-        });
-        
-        // Try to reload PO line items directly
-        const { data: directLineItems, error: directError } = await supabase
-          .from('po_line_items')
-          .select('*')
-          .eq('po_id', selectedPO.id);
-        
-        if (directLineItems && directLineItems.length > 0) {
-          console.log('Found line items via direct query:', directLineItems);
-          // Use the direct line items
-          const directPoLineItems = directLineItems.map((poItem: any, index: number) => {
-            const quantity = typeof poItem.quantity === 'string' 
-              ? parseFloat(poItem.quantity) || 1 
-              : (poItem.quantity || 1);
-            const unitPrice = typeof poItem.unit_price === 'string'
-              ? parseFloat(poItem.unit_price) || 0
-              : (poItem.unit_price || 0);
-            const description = poItem.description || '';
-            const itemName = description.split(' - ')[0].split(',')[0].trim().split(' ').slice(0, 2).join(' ') || `Item ${index + 1}`;
-            
-            const taxRateObj = taxRates.find(tr => tr.id === (calculatedTaxRate || defaultTaxRate));
-            const taxRatePercent = taxRateObj?.rate ? taxRateObj.rate / 100 : 0;
-            const subtotal = (quantity * unitPrice);
-            const amountWithTax = subtotal * (1 + taxRatePercent);
-            
-            return {
-              item_name: itemName,
-              description: description, // Full description from PO
-              account: defaultAccount,
-              quantity: quantity,
-              unit_price: unitPrice,
-              tax_rate: calculatedTaxRate || defaultTaxRate,
-              discount: 0,
-              amount: amountWithTax
-            };
-          });
-          setLineItems(directPoLineItems);
-        } else {
-          // Last resort fallback
-          setLineItems([
-            {
-              item_name: `Products from ${selectedPO.po_number}`,
-              description: `Invoice for ${selectedPO.po_number}`,
-              account: defaultAccount,
-              quantity: 1,
-              unit_price: subtotal,
-              tax_rate: calculatedTaxRate || defaultTaxRate,
-              discount: 0,
-              amount: poAmount
-            }
-          ]);
-        }
-      }
-
-      // Try to match customer from supplier_id if available
-      // In A/R context, the supplier in PO might be the customer we're invoicing
-      if (selectedPO.supplier_id) {
-        // Check if supplier_id matches any customer
-        const matchingCustomer = customers.find(c => c.id === selectedPO.supplier_id);
-        if (matchingCustomer) {
-          setFormData(prev => ({ ...prev, customer_id: matchingCustomer.id }));
-        }
-      }
+      setLineItems([{
+        item_name: `Products from ${selectedCustomerPO.po_number}`,
+        description: `Invoice for Customer PO ${selectedCustomerPO.po_number}`,
+        account: defaultAccount,
+        quantity: 1,
+        unit_price: subtotal,
+        tax_rate: defaultTaxRate,
+        discount: 0,
+        amount: poAmount
+      }]);
     }
   };
 
@@ -748,7 +544,6 @@ function CreateInvoicePageContent() {
                 amount: item.amount
               };
             }),
-            purchase_order: formData.purchase_order.trim() || undefined,
             reference: formData.reference.trim() || undefined,
             notes: formData.notes.trim() || undefined
           })
@@ -820,7 +615,7 @@ function CreateInvoicePageContent() {
           tax_amount: vat, // Tax amount - numeric type (nullable in schema)
           status: 'pending', // Default per schema
           wafeq_invoice_id: wafeqId, // Column name is wafeq_invoice_id (text type)
-          po_id: formData.purchase_order_id || null, // Link to purchase order (run add_po_id_to_invoices.sql migration first)
+          customer_po_id: selectedCustomerPOId || null, // Link to customer purchase order
           extraction_data: {
             // Store additional data in extraction_data (jsonb type)
             subtotal: subtotal,
@@ -844,12 +639,6 @@ function CreateInvoicePageContent() {
         }
         if (formData.reference && formData.reference.trim()) {
           invoiceData.extraction_data.reference = formData.reference.trim();
-        }
-        if (formData.purchase_order && formData.purchase_order.trim()) {
-          invoiceData.extraction_data.purchase_order = formData.purchase_order.trim();
-        }
-        if (formData.purchase_order_id) {
-          invoiceData.extraction_data.purchase_order_id = formData.purchase_order_id;
         }
         if (formData.notes && formData.notes.trim()) {
           invoiceData.extraction_data.notes = formData.notes.trim();
@@ -1030,36 +819,28 @@ function CreateInvoicePageContent() {
 
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Purchase order
-                        <span className="ml-2 text-xs text-gray-500 font-normal">(Select to prefill)</span>
+                        Link to Customer PO
+                        <span className="ml-2 text-xs text-gray-500 font-normal">(Optional - Select to prefill)</span>
                       </label>
                       <select
-                        value={selectedPOId}
+                        value={selectedCustomerPOId}
                         onChange={(e) => {
                           if (e.target.value) {
-                            handlePOSelection(e.target.value);
+                            handleCustomerPOSelection(e.target.value);
                           } else {
-                            setSelectedPOId('');
-                            setFormData(prev => ({ ...prev, purchase_order: '', purchase_order_id: '' }));
+                            setSelectedCustomerPOId('');
+                            setFormData(prev => ({ ...prev, customer_po_reference: '' }));
                           }
                         }}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       >
-                        <option value="">Select Purchase Order (Optional)</option>
-                        {purchaseOrders.map((po) => (
-                          <option key={po.id} value={po.id}>
-                            {po.po_number} - {po.currency} {parseFloat(po.amount || '0').toFixed(2)} ({po.status})
+                        <option value="">Select Customer PO (Optional)</option>
+                        {customerPOs.map((cpo) => (
+                          <option key={cpo.id} value={cpo.id}>
+                            {cpo.po_number} - {cpo.currency} {parseFloat(cpo.amount || '0').toFixed(2)} ({cpo.customers?.company_name || cpo.customers?.name || 'N/A'})
                           </option>
                         ))}
                       </select>
-                      {formData.purchase_order && (
-                        <input
-                          type="text"
-                          value={formData.purchase_order}
-                          readOnly
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-gray-50 text-gray-600 mt-2 text-sm"
-                        />
-                      )}
                     </div>
 
                     <div>

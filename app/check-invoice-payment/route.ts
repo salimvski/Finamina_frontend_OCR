@@ -71,29 +71,92 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: getErrorMessage(txErr) }, { status: 500 });
     }
 
-    const tolerance = 0.02;
+    // Tolerance: 1% of invoice amount or minimum 1.00 (whichever is larger)
+    // This handles rounding differences and small fees
+    const tolerance = Math.max(invAmount * 0.01, 1.00);
     const isCredit = (v: string) => /^credit$/i.test(String(v || '').trim());
-    let best: { id: string; amount: string; transaction_date: string; [k: string]: unknown } | null = null;
-    let bestDiff = Infinity;
+    
+    // Track potential matches for debugging
+    const potentialMatches: Array<{
+      id: string;
+      amount: number;
+      amountDiff: number;
+      date: string;
+      daysDiff: number;
+      description: string;
+    }> = [];
+    
+    let best: { id: string; amount: string; transaction_date: string; description?: string; [k: string]: unknown } | null = null;
+    let bestScore = Infinity; // Lower is better (combination of amount and date difference)
 
     for (const tx of txs || []) {
       const txAmount = parseFloat(String(tx.amount || 0));
-      if (Math.abs(txAmount - invAmount) > tolerance) continue;
+      const amountDiff = Math.abs(txAmount - invAmount);
+      
+      // Skip if amount difference is too large
+      if (amountDiff > tolerance) {
+        potentialMatches.push({
+          id: tx.id,
+          amount: txAmount,
+          amountDiff,
+          date: tx.transaction_date,
+          daysDiff: Math.abs(new Date(tx.transaction_date).getTime() - invDate.getTime()) / (1000 * 60 * 60 * 24),
+          description: tx.description || ''
+        });
+        continue;
+      }
+      
+      // Only match credit transactions (money coming in)
       if (!isCredit(tx.credit_debit_indicator)) continue;
 
-      const d = new Date(tx.transaction_date);
-      const diff = Math.abs(d.getTime() - invDate.getTime());
-      if (diff < bestDiff) {
-        bestDiff = diff;
-        best = tx;
+      const txDate = new Date(tx.transaction_date);
+      const daysDiff = Math.abs(txDate.getTime() - invDate.getTime()) / (1000 * 60 * 60 * 24);
+      
+      // Score: combination of amount difference (weighted) and days difference
+      // Amount difference is normalized to percentage, days difference is in days
+      const amountScore = (amountDiff / invAmount) * 100; // Percentage difference
+      const dateScore = daysDiff; // Days difference
+      const totalScore = amountScore * 0.3 + dateScore * 0.7; // Prefer closer dates
+      
+      if (totalScore < bestScore) {
+        bestScore = totalScore;
+        best = { ...tx, description: tx.description || '' };
       }
     }
 
     if (!best) {
+      // Provide helpful feedback about why no match was found
+      const creditTxs = (txs || []).filter(tx => isCredit(tx.credit_debit_indicator));
+      const amountMatches = creditTxs.filter(tx => {
+        const txAmount = parseFloat(String(tx.amount || 0));
+        return Math.abs(txAmount - invAmount) <= tolerance;
+      });
+      
+      let message = 'No matching credit transaction found.';
+      if (creditTxs.length === 0) {
+        message += ' No credit transactions found in the date range.';
+      } else if (amountMatches.length === 0) {
+        message += ` Found ${creditTxs.length} credit transaction(s), but none match the invoice amount (${invAmount.toFixed(2)} ± ${tolerance.toFixed(2)}).`;
+      } else {
+        message += ` Found ${amountMatches.length} transaction(s) with matching amount, but date matching failed.`;
+      }
+      
       return NextResponse.json({
         success: true,
         matched: false,
-        message: 'No matching credit transaction found for this invoice amount and date range.'
+        message,
+        debug: {
+          invoiceAmount: invAmount,
+          tolerance,
+          dateRange: {
+            start: windowStart.toISOString().split('T')[0],
+            end: windowEnd.toISOString().split('T')[0]
+          },
+          totalTransactions: txs?.length || 0,
+          creditTransactions: creditTxs.length,
+          amountMatches: amountMatches.length,
+          potentialMatches: potentialMatches.slice(0, 5) // Top 5 closest matches for debugging
+        }
       });
     }
 
@@ -111,6 +174,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: getErrorMessage(txUp.error) }, { status: 500 });
     }
 
+    const amountDiff = Math.abs(parseFloat(String(best.amount || 0)) - invAmount);
+    const daysDiff = Math.abs(new Date(best.transaction_date).getTime() - invDate.getTime()) / (1000 * 60 * 60 * 24);
+    
     return NextResponse.json({
       success: true,
       matched: true,
@@ -123,7 +189,12 @@ export async function POST(request: NextRequest) {
         lean_transaction_id: best.lean_transaction_id
       },
       paid_at: paidAt,
-      message: 'Invoice marked as paid and payment linked to the matching transaction.'
+      matchDetails: {
+        amountDifference: amountDiff.toFixed(2),
+        daysDifference: Math.round(daysDiff),
+        matchScore: bestScore.toFixed(2)
+      },
+      message: `Invoice marked as paid. Matched with transaction on ${new Date(best.transaction_date).toLocaleDateString()} (${Math.round(daysDiff)} days ${daysDiff > 0 ? 'after' : 'before'} invoice date).`
     });
   } catch (e: any) {
     console.error('check-invoice-payment:', e);

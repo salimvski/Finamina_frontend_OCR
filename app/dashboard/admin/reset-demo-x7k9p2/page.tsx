@@ -221,7 +221,27 @@ export default function ResetDemoPage() {
         deletedCounts.invoice_items = invoiceItems || 0;
       }
 
-      // 11. Invoices (delete BEFORE purchase orders since invoices reference POs)
+      // 11. Customer Purchase Orders (delete before invoices since invoices may reference them)
+      const { count: customerPOs } = await supabase
+        .from('customer_purchase_orders')
+        .select('*', { count: 'exact', head: true })
+        .eq('company_id', TEST_COMPANY_ID);
+      
+      // First, clear customer_po_id references from invoices to break foreign key constraints
+      await supabase
+        .from('invoices')
+        .update({ customer_po_id: null })
+        .eq('company_id', TEST_COMPANY_ID)
+        .not('customer_po_id', 'is', null);
+      
+      // Then delete customer purchase orders
+      await supabase
+        .from('customer_purchase_orders')
+        .delete()
+        .eq('company_id', TEST_COMPANY_ID);
+      deletedCounts.customer_purchase_orders = customerPOs || 0;
+
+      // 12. Invoices (delete BEFORE purchase orders since invoices reference POs)
       const { count: invoices } = await supabase
         .from('invoices')
         .select('*', { count: 'exact', head: true })
@@ -241,7 +261,7 @@ export default function ResetDemoPage() {
         .eq('company_id', TEST_COMPANY_ID);
       deletedCounts.invoices = invoices || 0;
 
-      // 12. PO line items - Get all POs first
+      // 13. PO line items - Get all POs first
       const { data: allPOs } = await supabase
         .from('purchase_orders')
         .select('id')
@@ -263,7 +283,7 @@ export default function ResetDemoPage() {
         deletedCounts.po_line_items = poLineItems || 0;
       }
 
-      // 13. Purchase orders - Now safe to delete (invoices already deleted)
+      // 14. Purchase orders - Now safe to delete (invoices already deleted)
       const { error: poDeleteError } = await supabase
         .from('purchase_orders')
         .delete()
@@ -288,7 +308,7 @@ export default function ResetDemoPage() {
       
       deletedCounts.purchase_orders = poCount || 0;
 
-      // 14. Supplier invoices
+      // 15. Supplier invoices
       const { count: supplierInvoices } = await supabase
         .from('supplier_invoices')
         .select('*', { count: 'exact', head: true })
@@ -299,14 +319,14 @@ export default function ResetDemoPage() {
         .eq('company_id', TEST_COMPANY_ID);
       deletedCounts.supplier_invoices = supplierInvoices || 0;
 
-      // 15. Customers (optional - comment out if you want to keep customers)
+      // 16. Customers (optional - comment out if you want to keep customers)
       // const { count: customers } = await supabase
       //   .from('customers')
       //   .delete({ count: 'exact' })
       //   .eq('company_id', TEST_COMPANY_ID);
       // deletedCounts.customers = customers || 0;
 
-      // 16. Suppliers (optional - comment out if you want to keep suppliers)
+      // 17. Suppliers (optional - comment out if you want to keep suppliers)
       // const { count: suppliers } = await supabase
       //   .from('suppliers')
       //   .delete({ count: 'exact' })

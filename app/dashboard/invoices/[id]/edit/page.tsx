@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import { ArrowLeft, Save, Loader2, Plus, Trash2, X, Shield, CreditCard, AlertCircle, CheckCircle } from 'lucide-react';
+import { ArrowLeft, Save, Loader2, Plus, Trash2, X, Shield, CreditCard, AlertCircle, CheckCircle, FileText } from 'lucide-react';
 import { useToast } from '@/lib/toast';
 import { safeApiCall } from '@/lib/error-handling';
 import Link from 'next/link';
@@ -43,6 +43,8 @@ export default function EditInvoicePage() {
   const [saving, setSaving] = useState(false);
   const [invoice, setInvoice] = useState<any>(null);
   const [customer, setCustomer] = useState<any>(null);
+  const [customerPO, setCustomerPO] = useState<any>(null);
+  const [matchedTransaction, setMatchedTransaction] = useState<any>(null);
   
   // 3-Way Check and Payment Status
   const [checkingQuality, setCheckingQuality] = useState(false);
@@ -142,6 +144,39 @@ export default function EditInvoicePage() {
         notes: data.extraction_data?.notes || '',
         status: data.status || 'pending'
       });
+
+      // Load customer PO if linked
+      if (data.customer_po_id) {
+        const { data: customerPOData } = await supabase
+          .from('customer_purchase_orders')
+          .select('id, po_number, po_date, amount, currency, status, pdf_url')
+          .eq('id', data.customer_po_id)
+          .single();
+        
+        if (customerPOData) {
+          setCustomerPO(customerPOData);
+        }
+      }
+
+      // Load matched bank transaction if invoice is paid
+      if (data.status === 'paid') {
+        const { data: transactionData } = await supabase
+          .from('bank_transactions')
+          .select('id, amount, transaction_date, credit_debit_indicator, description, lean_transaction_id, merchant_name, creditor_name, debtor_name')
+          .eq('matched_invoice_id', invoiceId)
+          .maybeSingle();
+        
+        if (transactionData) {
+          setMatchedTransaction(transactionData);
+          // Also set payment status for display
+          setPaymentStatus({
+            matched: true,
+            alreadyPaid: true,
+            transaction: transactionData,
+            message: 'Invoice is already paid and linked to a bank transaction.'
+          });
+        }
+      }
     }
     setLoading(false);
   };
@@ -565,19 +600,58 @@ export default function EditInvoicePage() {
                     : 'No payment found'}
                 </h3>
                 {paymentStatus.matched && paymentStatus.transaction && (
-                  <div className="text-sm text-gray-700 space-y-1">
-                    <div>Amount: {paymentStatus.transaction.amount}</div>
-                    <div>Date: {paymentStatus.transaction.transaction_date || paymentStatus.transaction.date}</div>
-                    {(paymentStatus.transaction.description || paymentStatus.transaction.reference) && (
-                      <div>Reference: {paymentStatus.transaction.description || paymentStatus.transaction.reference}</div>
+                  <div className="text-sm text-gray-700 space-y-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <span className="font-medium">Amount:</span> {paymentStatus.transaction.amount}
+                      </div>
+                      <div>
+                        <span className="font-medium">Date:</span> {paymentStatus.transaction.transaction_date ? new Date(paymentStatus.transaction.transaction_date).toLocaleDateString() : 'N/A'}
+                      </div>
+                    </div>
+                    {paymentStatus.transaction.description && (
+                      <div>
+                        <span className="font-medium">Description:</span> {paymentStatus.transaction.description}
+                      </div>
+                    )}
+                    {paymentStatus.matchDetails && (
+                      <div className="bg-blue-50 p-2 rounded text-xs">
+                        <div>Amount difference: {paymentStatus.matchDetails.amountDifference}</div>
+                        <div>Days difference: {paymentStatus.matchDetails.daysDifference} days</div>
+                        <div>Match score: {paymentStatus.matchDetails.matchScore}</div>
+                      </div>
                     )}
                     {paymentStatus.paid_at && (
-                      <div className="text-green-700 font-medium">Invoice paid_at: {new Date(paymentStatus.paid_at).toLocaleDateString()}</div>
+                      <div className="text-green-700 font-medium pt-2 border-t">
+                        Invoice marked as paid on: {new Date(paymentStatus.paid_at).toLocaleDateString()}
+                      </div>
                     )}
                   </div>
                 )}
-                {paymentStatus.message && !paymentStatus.transaction && (
-                  <div className="text-sm text-gray-600">{paymentStatus.message}</div>
+                {paymentStatus.message && (
+                  <div className="text-sm text-gray-600 mb-2">{paymentStatus.message}</div>
+                )}
+                {paymentStatus.debug && !paymentStatus.matched && (
+                  <div className="mt-3 bg-gray-50 p-3 rounded text-xs space-y-1">
+                    <div className="font-medium text-gray-700">Debug Info:</div>
+                    <div>Invoice Amount: {paymentStatus.debug.invoiceAmount?.toFixed(2)}</div>
+                    <div>Tolerance: ±{paymentStatus.debug.tolerance?.toFixed(2)}</div>
+                    <div>Date Range: {paymentStatus.debug.dateRange?.start} to {paymentStatus.debug.dateRange?.end}</div>
+                    <div>Total Transactions: {paymentStatus.debug.totalTransactions}</div>
+                    <div>Credit Transactions: {paymentStatus.debug.creditTransactions}</div>
+                    <div>Amount Matches: {paymentStatus.debug.amountMatches}</div>
+                    {paymentStatus.debug.potentialMatches && paymentStatus.debug.potentialMatches.length > 0 && (
+                      <div className="mt-2">
+                        <div className="font-medium">Closest matches:</div>
+                        {paymentStatus.debug.potentialMatches.slice(0, 3).map((match: any, idx: number) => (
+                          <div key={idx} className="text-xs">
+                            Amount: {match.amount.toFixed(2)} (diff: {match.amountDiff.toFixed(2)}), 
+                            Date: {new Date(match.date).toLocaleDateString()} ({Math.round(match.daysDiff)} days)
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
               <button
@@ -652,6 +726,130 @@ export default function EditInvoicePage() {
               </div>
             </div>
           </div>
+
+          {/* Matched Bank Transaction */}
+          {matchedTransaction && (
+            <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
+                <CheckCircle className="w-5 h-5 text-green-600" />
+                Matched Bank Transaction (Lean)
+              </h2>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    Transaction Amount
+                  </label>
+                  <div className="text-sm font-medium text-gray-900">{matchedTransaction.amount}</div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    Transaction Date
+                  </label>
+                  <div className="text-sm text-gray-900">
+                    {matchedTransaction.transaction_date ? new Date(matchedTransaction.transaction_date).toLocaleDateString() : 'N/A'}
+                  </div>
+                </div>
+                {matchedTransaction.description && (
+                  <div className="col-span-2">
+                    <label className="block text-sm font-medium text-gray-500 mb-1">
+                      Description
+                    </label>
+                    <div className="text-sm text-gray-900">{matchedTransaction.description}</div>
+                  </div>
+                )}
+                {matchedTransaction.merchant_name && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-1">
+                      Merchant
+                    </label>
+                    <div className="text-sm text-gray-900">{matchedTransaction.merchant_name}</div>
+                  </div>
+                )}
+                {matchedTransaction.creditor_name && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-500 mb-1">
+                      Creditor
+                    </label>
+                    <div className="text-sm text-gray-900">{matchedTransaction.creditor_name}</div>
+                  </div>
+                )}
+                {matchedTransaction.lean_transaction_id && (
+                  <div className="col-span-2">
+                    <label className="block text-sm font-medium text-gray-500 mb-1">
+                      Lean Transaction ID
+                    </label>
+                    <div className="text-xs font-mono text-gray-600">{matchedTransaction.lean_transaction_id}</div>
+                  </div>
+                )}
+                <div className="col-span-2">
+                  <Link
+                    href="/dashboard/reconciliation"
+                    className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-700 text-sm font-medium"
+                  >
+                    View in Reconciliation →
+                  </Link>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Linked Customer PO */}
+          {customerPO && (
+            <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Linked Customer Purchase Order</h2>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    PO Number
+                  </label>
+                  <div className="text-sm font-medium text-gray-900">{customerPO.po_number}</div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    PO Date
+                  </label>
+                  <div className="text-sm text-gray-900">
+                    {customerPO.po_date ? new Date(customerPO.po_date).toLocaleDateString() : 'N/A'}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    Amount
+                  </label>
+                  <div className="text-sm font-medium text-gray-900">
+                    {customerPO.currency} {parseFloat(customerPO.amount || '0').toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-500 mb-1">
+                    Status
+                  </label>
+                  <span className={`inline-block px-2 py-1 text-xs font-semibold rounded-full ${
+                    customerPO.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
+                    customerPO.status === 'approved' ? 'bg-green-100 text-green-800' :
+                    customerPO.status === 'rejected' ? 'bg-red-100 text-red-800' :
+                    customerPO.status === 'fulfilled' ? 'bg-blue-100 text-blue-800' :
+                    'bg-gray-100 text-gray-800'
+                  }`}>
+                    {customerPO.status.charAt(0).toUpperCase() + customerPO.status.slice(1)}
+                  </span>
+                </div>
+                {customerPO.pdf_url && (
+                  <div className="col-span-2">
+                    <a
+                      href={customerPO.pdf_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-700 text-sm font-medium"
+                    >
+                      <FileText className="w-4 h-4" />
+                      View Customer PO PDF
+                    </a>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Editable Section */}
           <div className="space-y-4">

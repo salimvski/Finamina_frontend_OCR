@@ -37,6 +37,9 @@ export default function DashboardHome() {
         anomaliesDetected: 0,
         moneySaved: 0,
         
+        // Customer POs Stats
+        totalCustomerPOs: 0,
+        
         // Reconciliation Stats
         totalBankTransactions: 0,
         reconciledTransactions: 0,
@@ -135,6 +138,13 @@ export default function DashboardHome() {
             .eq('company_id', company_id);
         const totalARMatches = arMatchesCount ?? 0;
 
+        // Load Customer POs count
+        const { count: customerPOsCount } = await supabase
+            .from('customer_purchase_orders')
+            .select('*', { count: 'exact', head: true })
+            .eq('company_id', company_id);
+        const totalCustomerPOs = customerPOsCount ?? 0;
+
         // Load Reconciliation data
         const { data: bankAccounts } = await supabase
             .from('bank_accounts')
@@ -171,6 +181,7 @@ export default function DashboardHome() {
             totalARMatches,
             anomaliesDetected: 0, // TODO: Calculate from procurement_anomalies
             moneySaved: 0, // TODO: Calculate from anomalies
+            totalCustomerPOs,
             totalBankTransactions,
             reconciledTransactions,
             unreconciledTransactions: totalBankTransactions - reconciledTransactions,

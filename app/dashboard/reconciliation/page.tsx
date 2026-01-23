@@ -94,7 +94,7 @@ export default function ReconciliationPage() {
         
         setReconcilingCustomer(true);
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/lean-reconciliation`, {
+            const response = await fetch(`/api/n8n-proxy`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })

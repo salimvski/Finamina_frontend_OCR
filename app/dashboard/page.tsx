@@ -393,7 +393,7 @@ export default function DashboardHome() {
                                 Sales
                             </span>
                         </div>
-                        <h3 className="text-xl font-bold text-gray-900 mb-2">Sales & Invoices</h3>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Sales &amp; Invoices</h3>
                         <p className="text-gray-600 text-sm mb-4">Manage customer invoices and track receivables (A/R)</p>
                         <div className="space-y-2 mb-4">
                             <div className="flex justify-between text-sm">
@@ -429,7 +429,7 @@ export default function DashboardHome() {
                                 Purchasing
                             </span>
                         </div>
-                        <h3 className="text-xl font-bold text-gray-900 mb-2">Suppliers & Payables</h3>
+                        <h3 className="text-xl font-bold text-gray-900 mb-2">Suppliers &amp; Payables</h3>
                         <p className="text-gray-600 text-sm mb-4">Manage supplier invoices and track payables (A/P)</p>
                         <div className="space-y-2 mb-4">
                             <div className="flex justify-between text-sm">

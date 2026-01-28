@@ -10,7 +10,8 @@
     "generate-test-pdfs": "tsx scripts/generate-test-pdfs.ts",
     "generate-test-pdfs-with-data": "tsx scripts/generate-test-pdfs-with-data.ts",
     "list-customers": "tsx scripts/list-customers-suppliers.ts",
-    "cleanup-test-data": "tsx scripts/cleanup-test-data.ts"
+    "cleanup-test-data": "tsx scripts/cleanup-test-data.ts",
+    "generate-ap-po-pdfs": "tsx scripts/generate-ap-po-pdfs.ts"
   },
   "dependencies": {
     "@supabase/auth-helpers-nextjs": "^0.15.0",

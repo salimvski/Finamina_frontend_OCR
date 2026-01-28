@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { 
     Package, TrendingDown, AlertTriangle, CheckCircle, Clock,
     FileText, Upload, Search, Filter, ArrowLeft, Eye, XCircle,
-    Loader2, Shield, TrendingUp, DollarSign, X
+    Loader2, Shield, TrendingUp, DollarSign, X, Plus
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -15,7 +15,7 @@ import { getErrorMessage, safeApiCall, fetchWithTimeout } from '@/lib/error-hand
 
 interface UploadModal {
     isOpen: boolean;
-    type: 'po' | 'dn' | null;
+    type: 'po' | 'dn' | 'invoice' | null;
     uploading: boolean;
     fileName: string;
     stage: 'idle' | 'uploading' | 'ocr' | 'saving' | 'success' | 'error';
@@ -45,6 +45,7 @@ function ProcurementPageContent() {
     
     // Data states
     const [purchaseOrders, setPurchaseOrders] = useState<any[]>([]);
+    const [suppliersMap, setSuppliersMap] = useState<Record<string, string>>({});
     const [deliveryNotes, setDeliveryNotes] = useState<any[]>([]);
     const [matches, setMatches] = useState<any[]>([]);
     const [anomalies, setAnomalies] = useState<any[]>([]);
@@ -96,9 +97,10 @@ function ProcurementPageContent() {
             setCompanyId(userData.company_id);
             await Promise.all([
                 loadPurchaseOrders(userData.company_id),
+                loadSuppliers(userData.company_id),
                 loadDeliveryNotes(userData.company_id),
                 loadMatches(userData.company_id),
-                loadAnomalies(userData.company_id)
+                loadAnomalies(userData.company_id),
             ]);
         }
 
@@ -106,16 +108,39 @@ function ProcurementPageContent() {
     };
 
     const loadPurchaseOrders = async (company_id: string) => {
-        const { data } = await supabase
+        const { data, error } = await supabase
             .from('purchase_orders')
-            .select(`
-                *,
-                supplier:suppliers(name)
-            `)
+            .select('*')
             .eq('company_id', company_id)
             .order('created_at', { ascending: false });
 
+        if (error) {
+            console.error('Error loading purchase orders:', error);
+            setPurchaseOrders([]);
+            return;
+        }
         if (data) setPurchaseOrders(data);
+    };
+
+    const loadSuppliers = async (company_id: string) => {
+        const { data, error } = await supabase
+            .from('suppliers')
+            .select('id, name')
+            .eq('company_id', company_id);
+
+        if (error) {
+            console.error('Error loading suppliers for procurement page:', error);
+            setSuppliersMap({});
+            return;
+        }
+
+        const map: Record<string, string> = {};
+        (data || []).forEach((s: any) => {
+            if (s.id) {
+                map[s.id] = s.name || 'Unknown';
+            }
+        });
+        setSuppliersMap(map);
     };
 
     const loadDeliveryNotes = async (company_id: string) => {
@@ -185,7 +210,7 @@ function ProcurementPageContent() {
         }
     };
 
-    const openUploadModal = (type: 'po' | 'dn') => {
+    const openUploadModal = (type: 'po' | 'dn' | 'invoice') => {
         setUploadModal({
             isOpen: true,
             type,
@@ -255,9 +280,14 @@ function ProcurementPageContent() {
                     message: 'Reading document with AI...'
                 }));
 
-                const endpoint = uploadModal.type === 'po' 
-                    ? 'upload-purchase-order' 
-                    : 'upload-delivery-note';
+                let endpoint: string;
+                if (uploadModal.type === 'po') {
+                    endpoint = 'upload-purchase-order';
+                } else if (uploadModal.type === 'dn') {
+                    endpoint = 'upload-delivery-note';
+                } else {
+                    endpoint = 'upload-supplier-invoice';
+                }
 
                 const response = await fetchWithTimeout(
                     `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/${endpoint}`,
@@ -298,7 +328,12 @@ function ProcurementPageContent() {
             setUploadModal(prev => ({
                 ...prev,
                 stage: 'success',
-                message: `${uploadModal.type === 'po' ? 'Purchase Order' : 'Delivery Note'} uploaded successfully!`
+                message:
+                    uploadModal.type === 'po'
+                        ? 'Purchase Order uploaded successfully!'
+                        : uploadModal.type === 'dn'
+                        ? 'Delivery Note uploaded successfully!'
+                        : 'Supplier Invoice uploaded successfully!'
             }));
 
             await loadData();
@@ -320,7 +355,12 @@ function ProcurementPageContent() {
         const totalDNs = deliveryNotes.length;
         const perfectMatches = matches.filter(m => m.match_status === 'perfect').length;
         const anomaliesCount = anomalies.length;
-        const totalSpend = purchaseOrders.reduce((sum, po) => sum + parseFloat(po.total_amount || 0), 0);
+        // Support both legacy `amount` and newer `total_amount` fields
+        const totalSpend = purchaseOrders.reduce((sum, po) => {
+            const value = po.total_amount ?? po.amount ?? 0;
+            const num = typeof value === 'number' ? value : parseFloat(value || '0');
+            return sum + (isNaN(num) ? 0 : num);
+        }, 0);
 
         setStats({
             totalPOs,
@@ -349,7 +389,12 @@ function ProcurementPageContent() {
                     <div className="bg-white rounded-xl shadow-xl max-w-md w-full mx-4">
                         <div className="flex items-center justify-between p-6 border-b border-gray-200">
                             <h3 className="text-xl font-bold text-gray-900">
-                                Upload {uploadModal.type === 'po' ? 'Purchase Order' : 'Delivery Note'}
+                                Upload{" "}
+                                {uploadModal.type === 'po'
+                                    ? 'Purchase Order'
+                                    : uploadModal.type === 'dn'
+                                    ? 'Delivery Note'
+                                    : 'Supplier Invoice'}
                             </h3>
                             {!uploadModal.uploading && (
                                 <button onClick={closeUploadModal} className="text-gray-400 hover:text-gray-600">
@@ -362,7 +407,13 @@ function ProcurementPageContent() {
                             {uploadModal.stage === 'idle' && (
                                 <div>
                                     <p className="text-gray-600 mb-4">
-                                        Select a {uploadModal.type === 'po' ? 'Purchase Order' : 'Delivery Note'} document (PDF, JPG, PNG)
+                                        Select a{" "}
+                                        {uploadModal.type === 'po'
+                                            ? 'Purchase Order'
+                                            : uploadModal.type === 'dn'
+                                            ? 'Delivery Note'
+                                            : 'Supplier Invoice'}{" "}
+                                        document (PDF, JPG, PNG)
                                     </p>
                                     <input
                                         ref={fileInputRef}
@@ -440,11 +491,20 @@ function ProcurementPageContent() {
                             </Link>
                             <div>
                                 <h1 className="text-3xl font-bold text-gray-900">Procurement Management</h1>
-                                <p className="text-gray-600 mt-1">3-Way Matching & Anomaly Detection</p>
+                                <p className="text-gray-600 mt-1">
+                                    Upload POs, Delivery Notes and Supplier Invoices for 3-Way Matching
+                                </p>
                             </div>
                         </div>
 
                         <div className="flex gap-3">
+                            <Link
+                                href="/dashboard/procurement/create-po"
+                                className="px-6 py-3 bg-white text-blue-700 border border-blue-200 rounded-lg hover:bg-blue-50 flex items-center gap-2"
+                            >
+                                <Plus className="w-5 h-5" />
+                                New PO
+                            </Link>
                             <button
                                 onClick={() => openUploadModal('po')}
                                 className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
@@ -458,6 +518,13 @@ function ProcurementPageContent() {
                             >
                                 <Package className="w-5 h-5" />
                                 Upload DN
+                            </button>
+                            <button
+                                onClick={() => openUploadModal('invoice')}
+                                className="px-6 py-3 bg-red-600 text-white rounded-lg hover:bg-red-700 flex items-center gap-2"
+                            >
+                                <FileText className="w-5 h-5" />
+                                Upload Invoice
                             </button>
                             <button
                                 onClick={handleRunMatch}
@@ -643,6 +710,7 @@ function ProcurementPageContent() {
                                                     <th className="px-6 py-3 text-left text-xs font-semibold text-gray-600 uppercase">Date</th>
                                                     <th className="px-6 py-3 text-right text-xs font-semibold text-gray-600 uppercase">Amount</th>
                                                     <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Status</th>
+                                                    <th className="px-6 py-3 text-center text-xs font-semibold text-gray-600 uppercase">Actions</th>
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-gray-200">
@@ -652,13 +720,19 @@ function ProcurementPageContent() {
                                                             {po.po_number}
                                                         </td>
                                                         <td className="px-6 py-4 text-sm text-gray-900">
-                                                            {po.supplier?.name || 'Unknown'}
+                                                            {po.supplier_id && suppliersMap[po.supplier_id]
+                                                                ? suppliersMap[po.supplier_id]
+                                                                : 'Unknown'}
                                                         </td>
                                                         <td className="px-6 py-4 text-sm text-gray-600">
                                                             {new Date(po.po_date).toLocaleDateString()}
                                                         </td>
                                                         <td className="px-6 py-4 text-sm font-semibold text-gray-900 text-right">
-                                                            {parseFloat(po.total_amount).toFixed(2)} {po.currency}
+                                                            {(() => {
+                                                                const value = po.total_amount ?? po.amount ?? 0;
+                                                                const num = typeof value === 'number' ? value : parseFloat(value || '0');
+                                                                return `${(isNaN(num) ? 0 : num).toFixed(2)} ${po.currency}`;
+                                                            })()}
                                                         </td>
                                                         <td className="px-6 py-4 text-center">
                                                             <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
@@ -669,6 +743,15 @@ function ProcurementPageContent() {
                                                             }`}>
                                                                 {po.status.replace('_', ' ').toUpperCase()}
                                                             </span>
+                                                        </td>
+                                                        <td className="px-6 py-4 text-center">
+                                                            <Link
+                                                                href={`/dashboard/procurement/po/${po.id}`}
+                                                                className="inline-flex items-center gap-1 px-3 py-1 text-xs font-semibold text-blue-600 hover:bg-blue-50 rounded-full"
+                                                            >
+                                                                <Eye className="w-4 h-4" />
+                                                                View
+                                                            </Link>
                                                         </td>
                                                     </tr>
                                                 ))}

@@ -351,10 +351,6 @@ export default function ContactsPage() {
 
                 // Map Wafeq response (uses 'name') to our format (uses 'company_name')
                 const companyName = fetchedContact.name || fetchedContact.company_name || formData.company_name;
-                // Handle relationship - Wafeq returns array, we store as string
-                const relationshipValue = Array.isArray(fetchedContact.relationship) 
-                    ? (fetchedContact.relationship.length > 1 ? 'both' : fetchedContact.relationship[0])
-                    : (fetchedContact.relationship || formData.relationship);
 
                 // Update Supabase with data from Wafeq
                 const { error } = await supabase
@@ -374,7 +370,8 @@ export default function ContactsPage() {
                         contact_code: fetchedContact.code || fetchedContact.contact_code || formData.contact_code,
                         email: fetchedContact.email || formData.email,
                         phone: fetchedContact.phone || formData.phone,
-                        relationship: relationshipValue,
+                        // For manual edits in our app, always respect the user-selected type
+                        relationship: formData.relationship,
                         payment_terms: fetchedContact.payment_terms || formData.payment_terms,
                         contact_id_type: fetchedContact.contact_id_type || formData.contact_id_type,
                         id_number: fetchedContact.id_number || formData.id_number,
@@ -414,10 +411,6 @@ export default function ContactsPage() {
 
                 // Map Wafeq response (uses 'name') to our format (uses 'company_name')
                 const companyName = fetchedContact.name || fetchedContact.company_name || formData.company_name;
-                // Handle relationship - Wafeq returns array, we store as string
-                const relationshipValue = Array.isArray(fetchedContact.relationship) 
-                    ? (fetchedContact.relationship.length > 1 ? 'both' : fetchedContact.relationship[0])
-                    : (fetchedContact.relationship || formData.relationship || 'customer');
 
                 // Save to Supabase with data from Wafeq
                 const { data, error } = await supabase
@@ -438,7 +431,8 @@ export default function ContactsPage() {
                         contact_code: fetchedContact.code || fetchedContact.contact_code || formData.contact_code,
                         email: fetchedContact.email || formData.email,
                         phone: fetchedContact.phone || formData.phone,
-                        relationship: relationshipValue,
+                        // For contacts created from our UI, keep the relationship the user chose
+                        relationship: formData.relationship || 'customer',
                         payment_terms: fetchedContact.payment_terms || formData.payment_terms,
                         contact_id_type: fetchedContact.contact_id_type || formData.contact_id_type,
                         id_number: fetchedContact.id_number || formData.id_number,
@@ -537,7 +531,7 @@ export default function ContactsPage() {
                 throw new Error('Invalid response format from Wafeq');
             }
 
-            // Sync each contact
+            // Sync each contact (Wafeq is source of truth)
             let synced = 0;
             let errors = 0;
             
@@ -599,32 +593,50 @@ export default function ContactsPage() {
                     };
 
                     if (existing) {
-                        // Update existing
+                        // Update existing row (Wafeq is source of truth)
                         const { error } = await supabase
                             .from('customers')
                             .update(contactData)
                             .eq('id', existing.id);
-                        
+
                         if (error) {
-                            console.error(`Error updating contact ${wafeqContact.id}:`, error);
+                            console.error(
+                                `Error updating contact ${wafeqContact.id}:`,
+                                error?.message || error
+                            );
                             errors++;
                             continue;
                         }
                     } else {
-                        // Create new
+                        // Try create new; if unique constraint, treat as already-synced and move on
                         const { error } = await supabase
                             .from('customers')
                             .insert(contactData);
-                        
+
                         if (error) {
-                            console.error(`Error creating contact ${wafeqContact.id}:`, error);
-                            errors++;
-                            continue;
+                            // 23505 = unique_violation in Postgres
+                            if (error.code === '23505') {
+                                console.warn(
+                                    `Duplicate contact ${wafeqContact.id} (likely same VAT or name), skipping insert and treating as already synced. Details:`,
+                                    error?.message || error
+                                );
+                                // Do not count as hard error; continue with next contact
+                            } else {
+                                console.error(
+                                    `Error creating contact ${wafeqContact.id}:`,
+                                    error?.message || error
+                                );
+                                errors++;
+                                continue;
+                            }
                         }
                     }
                     synced++;
                 } catch (err: any) {
-                    console.error(`Error syncing contact ${wafeqContact.id}:`, err);
+                    console.error(
+                        `Error syncing contact ${wafeqContact.id}:`,
+                        err?.message || err
+                    );
                     errors++;
                 }
             }

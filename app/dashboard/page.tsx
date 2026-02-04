@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { 
     TrendingUp, TrendingDown, Clock, CheckCircle, AlertTriangle, 
     DollarSign, Upload, Zap, Shield, Package, FileText, Calendar, Plus, User,
-    ArrowRight, Receipt, Building, CreditCard, BarChart3, Database
+    ArrowRight, Receipt, Building, CreditCard, BarChart3
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
@@ -338,46 +338,6 @@ export default function DashboardHome() {
                     </div>
                 </div>
 
-                {/* Demo Data Management Widget - Only show for test company */}
-                {companyId === '22222222-2222-2222-2222-222222222222' && (
-                  <div className="bg-gradient-to-r from-orange-50 to-red-50 border-2 border-orange-200 rounded-xl p-6 mb-8 shadow-sm">
-                    <div className="flex items-center justify-between mb-4">
-                      <div>
-                        <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                          <Database className="w-5 h-5 text-orange-600" />
-                          Demo Data Management
-                        </h2>
-                        <p className="text-sm text-gray-600 mt-1">Quick access to reset and manage test data</p>
-                      </div>
-                      <Link
-                        href="/dashboard/admin/reset-demo-x7k9p2"
-                        className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition font-medium text-sm flex items-center gap-2"
-                      >
-                        <Database className="w-4 h-4" />
-                        Manage
-                      </Link>
-                    </div>
-                    <div className="grid grid-cols-4 gap-4 text-sm">
-                      <div className="bg-white/60 rounded-lg p-3">
-                        <div className="text-xs text-gray-600 mb-1">Test Invoices</div>
-                        <div className="text-lg font-bold text-gray-900">{stats.totalCustomerInvoices}</div>
-                      </div>
-                      <div className="bg-white/60 rounded-lg p-3">
-                        <div className="text-xs text-gray-600 mb-1">Test POs</div>
-                        <div className="text-lg font-bold text-gray-900">{stats.totalPOs}</div>
-                      </div>
-                      <div className="bg-white/60 rounded-lg p-3">
-                        <div className="text-xs text-gray-600 mb-1">Test DNs</div>
-                        <div className="text-lg font-bold text-gray-900">-</div>
-                      </div>
-                      <div className="bg-white/60 rounded-lg p-3">
-                        <div className="text-xs text-gray-600 mb-1">Matches</div>
-                        <div className="text-lg font-bold text-gray-900">{stats.totalARMatches}</div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 {/* Main Modules Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
                     {/* Module 1: Sales & Invoices (A/R) */}
@@ -514,8 +474,7 @@ export default function DashboardHome() {
                             </div>
                         </div>
                         <div className="flex items-center justify-center gap-2 w-full px-4 py-2 bg-yellow-50 border-2 border-yellow-200 text-yellow-700 rounded-lg hover:bg-yellow-100 transition font-semibold text-sm">
-                            <Zap className="w-4 h-4" />
-                            Auto-Reconcile
+                            View Reconciliation
                             <ArrowRight className="w-4 h-4" />
                         </div>
                     </Link>

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { validateFile } from '@/lib/validation';
 
-const N8N_URL = process.env.NEXT_PUBLIC_N8N_URL || '';
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_N8N_URL || '';
 
 export async function POST(request: NextRequest) {
   try {
@@ -43,117 +43,53 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate and normalize n8n URL
-    // Check both NEXT_PUBLIC_N8N_URL and process.env directly (for server-side)
-    const n8nUrlEnv = process.env.NEXT_PUBLIC_N8N_URL || N8N_URL || '';
-    if (!n8nUrlEnv || !n8nUrlEnv.trim()) {
-      console.error('Upload Customer PO: NEXT_PUBLIC_N8N_URL not configured');
-      console.error('Upload Customer PO: Environment variable check:', {
-        N8N_URL: N8N_URL ? 'set' : 'not set',
-        processEnv: process.env.NEXT_PUBLIC_N8N_URL ? 'set' : 'not set'
-      });
+    if (!BACKEND_URL?.trim()) {
       return NextResponse.json(
-        { 
-          success: false, 
-          error: 'N8N server URL is not configured. Please set NEXT_PUBLIC_N8N_URL environment variable in Vercel project settings.' 
-        },
+        { success: false, error: 'Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL.' },
         { status: 500 }
       );
     }
 
-    // Force HTTP for server-side calls (server can call HTTP even if env var is HTTPS)
-    let baseUrl = n8nUrlEnv.trim();
-    if (baseUrl.startsWith('https://')) {
-      baseUrl = baseUrl.replace('https://', 'http://');
-    } else if (!baseUrl.startsWith('http://')) {
-      // If it doesn't start with http:// or https://, add http://
+    let baseUrl = BACKEND_URL.trim().replace(/\/$/, '');
+    if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
       baseUrl = `http://${baseUrl}`;
     }
-    // Remove trailing slash if present
-    baseUrl = baseUrl.replace(/\/$/, '');
-    
-    // Call n8n webhook - ensure /webhook/ is in the path
-    const n8nUrl = `${baseUrl}/webhook/upload-customer-po`;
-    console.log('Upload Customer PO: Calling n8n webhook:', n8nUrl);
-    console.log('Upload Customer PO: Base URL from env:', n8nUrlEnv);
+    const backendUrl = `${baseUrl}/webhook/upload-customer-po`;
 
-    // Prepare form data for n8n
-    const n8nFormData = new FormData();
-    n8nFormData.append('data', file);
-    n8nFormData.append('company_id', companyId);
-    
-    const n8nResponse = await fetch(n8nUrl, {
-      method: 'POST',
-      body: n8nFormData,
-    });
+    const body = new FormData();
+    body.append('data', file);
+    body.append('company_id', companyId);
 
-    const responseText = await n8nResponse.text();
-    console.log('Upload Customer PO: n8n response status:', n8nResponse.status);
-    console.log('Upload Customer PO: n8n response body:', responseText.substring(0, 500));
+    const backendResponse = await fetch(backendUrl, { method: 'POST', body });
+    const responseText = await backendResponse.text();
 
-    if (!n8nResponse.ok) {
-      let errorMessage = `Upload failed with status ${n8nResponse.status}`;
+    if (!backendResponse.ok) {
+      let errorMessage = `Upload failed with status ${backendResponse.status}`;
       try {
-        const errorJson = JSON.parse(responseText);
-        errorMessage = errorJson.error || errorJson.message || responseText || errorMessage;
+        const err = JSON.parse(responseText);
+        errorMessage = err.error || err.detail || err.message || errorMessage;
       } catch {
-        errorMessage = responseText || errorMessage;
+        if (responseText.trim()) errorMessage = responseText.trim();
       }
       return NextResponse.json(
         { success: false, error: errorMessage },
-        { status: n8nResponse.status }
+        { status: backendResponse.status }
       );
     }
 
-    // Parse response
-    let responseData: any;
+    let data: any;
     try {
-      responseData = JSON.parse(responseText);
+      data = responseText ? JSON.parse(responseText) : {};
     } catch {
-      // If not JSON, check for error keywords
-      if (responseText.toLowerCase().includes('error') || 
-          responseText.toLowerCase().includes('failed') ||
-          responseText.toLowerCase().includes('duplicate')) {
-        return NextResponse.json(
-          { success: false, error: responseText || 'Upload failed - n8n returned an error' },
-          { status: 500 }
-        );
-      }
-      // Assume success if status is OK
-      responseData = { success: true };
-    }
-
-    // Check for errors, but "Workflow was started" is actually a success message
-    if (responseData.error) {
-      const errorMsg = String(responseData.error).toLowerCase();
-      // "Workflow was started" means n8n accepted the request and is processing
-      if (errorMsg.includes('workflow was started') || errorMsg.includes('workflow started')) {
-        // Treat as success - workflow is processing asynchronously
-        return NextResponse.json({
-          success: true,
-          data: responseData.data || responseData,
-          message: 'Workflow started successfully'
-        });
-      }
-      // Other errors are real errors
       return NextResponse.json(
-        { success: false, error: responseData.error || responseData.message || 'Upload failed' },
-        { status: 500 }
-      );
-    }
-    
-    if (!responseData.success && !Array.isArray(responseData) && !responseData.data) {
-      return NextResponse.json(
-        { success: false, error: responseData.message || 'Upload failed' },
-        { status: 500 }
+        { success: false, error: 'Invalid JSON response from backend' },
+        { status: 502 }
       );
     }
 
-    // Return the PO data (should be an array with PO object)
-    return NextResponse.json({
-      success: true,
-      data: Array.isArray(responseData) ? responseData[0] : responseData
-    });
+    // Pass through REST response: { success, data } or { success, data: { id, po_number, ... } }
+    const payload = data.data !== undefined ? data : { success: true, data };
+    return NextResponse.json(payload);
   } catch (error: any) {
     console.error('Error uploading customer PO:', error);
     return NextResponse.json(

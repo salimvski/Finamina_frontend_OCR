@@ -38,6 +38,19 @@ async function wafeqRequest(
   return response.json();
 }
 
+/** Saudi VAT: 15 digits, must start and end with 3. Returns null if empty; throws if invalid. */
+function normalizeTaxRegistrationNumber(value: string | undefined): string | null {
+  if (!value || !value.trim()) return null;
+  const digits = value.trim().replace(/\D/g, '');
+  if (digits.length === 0) return null;
+  if (digits.length !== 15 || digits[0] !== '3' || digits[14] !== '3') {
+    throw new Error(
+      'Tax registration number must be exactly 15 digits, starting and ending with 3 (e.g. 310123456700003). Leave empty if not applicable.'
+    );
+  }
+  return digits;
+}
+
 // POST /api/wafeq/contacts - Create a new contact
 export async function POST(request: NextRequest) {
   try {
@@ -69,9 +82,15 @@ export async function POST(request: NextRequest) {
       wafeqPayload.country = countryValue;
     }
 
-    // Tax registration number - Only include if provided
-    if (contactData.tax_registration_number && contactData.tax_registration_number.trim()) {
-      wafeqPayload.tax_registration_number = contactData.tax_registration_number.trim();
+    // Tax registration number - Validate Saudi format (15 digits, start/end with 3) or omit
+    try {
+      const trn = normalizeTaxRegistrationNumber(contactData.tax_registration_number);
+      if (trn) wafeqPayload.tax_registration_number = trn;
+    } catch (e: any) {
+      return NextResponse.json(
+        { success: false, error: e.message || 'Invalid tax registration number' },
+        { status: 400 }
+      );
     }
 
     // Address fields - Build address object only if at least one field has a value

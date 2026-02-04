@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { 
     RefreshCw, Loader2, CheckCircle, XCircle, Clock, 
     TrendingUp, TrendingDown, DollarSign, AlertCircle,
-    ArrowLeft, Search, Filter, Eye
+    ArrowLeft, Search, Eye
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -29,8 +29,7 @@ interface BankTransaction {
 export default function ReconciliationPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
-    const [reconcilingCustomer, setReconcilingCustomer] = useState(false);
-    const [reconcilingSupplier, setReconcilingSupplier] = useState(false);
+    const [reconciling, setReconciling] = useState(false);
     const [transactions, setTransactions] = useState<BankTransaction[]>([]);
     const [companyId, setCompanyId] = useState<string>('');
     const [filterType, setFilterType] = useState<'all' | 'matched' | 'unmatched'>('all');
@@ -89,57 +88,33 @@ export default function ReconciliationPage() {
         setLoading(false);
     };
 
-    const handleReconcileCustomers = async () => {
+    const handleReconcile = async () => {
         if (!companyId) return;
-        
-        setReconcilingCustomer(true);
+        const baseUrl = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_N8N_URL || '').trim().replace(/\/$/, '');
+        if (!baseUrl) {
+            alert('Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL.');
+            return;
+        }
+        const url = `${baseUrl.startsWith('http') ? baseUrl : `http://${baseUrl}`}/webhook/lean-reconciliation?company_id=${encodeURIComponent(companyId)}`;
+        setReconciling(true);
         try {
-            const response = await fetch(`/api/n8n-proxy`, {
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ company_id: companyId })
             });
-
-            if (response.ok) {
-                alert('Customer reconciliation completed!');
-                loadTransactions(companyId);
+            const data = await response.json().catch(() => ({}));
+            if (response.ok && (data.success !== false)) {
+                const synced = data.synced ?? data.matches_applied ?? '';
+                alert(synced !== '' ? `Reconciliation completed. ${synced} transactions synced.` : 'Reconciliation completed.');
+                await loadTransactions(companyId);
             } else {
-                alert('Reconciliation failed');
+                alert(data.error || data.detail || `Reconciliation failed (${response.status})`);
             }
         } catch (error) {
-            alert('Error during reconciliation');
+            alert(error instanceof Error ? error.message : 'Error during reconciliation');
         } finally {
-            setReconcilingCustomer(false);
+            setReconciling(false);
         }
-    };
-
-    const handleReconcileSuppliers = async () => {
-        if (!companyId) return;
-        
-        setReconcilingSupplier(true);
-        try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/reconcile-suppliers`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ company_id: companyId })
-            });
-
-            if (response.ok) {
-                alert('Supplier reconciliation completed!');
-                loadTransactions(companyId);
-            } else {
-                alert('Reconciliation failed');
-            }
-        } catch (error) {
-            alert('Error during reconciliation');
-        } finally {
-            setReconcilingSupplier(false);
-        }
-    };
-
-    const handleReconcileAll = async () => {
-        await handleReconcileCustomers();
-        await handleReconcileSuppliers();
     };
 
     // Calculate stats
@@ -209,52 +184,23 @@ export default function ReconciliationPage() {
                             </div>
                         </div>
 
-                        <div className="flex gap-3">
-                            <button
-                                onClick={handleReconcileCustomers}
-                                disabled={reconcilingCustomer}
-                                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2 disabled:bg-gray-400"
-                            >
-                                {reconcilingCustomer ? (
-                                    <>
-                                        <Loader2 className="w-5 h-5 animate-spin" />
-                                        Reconciling...
-                                    </>
-                                ) : (
-                                    <>
-                                        <TrendingUp className="w-5 h-5" />
-                                        Reconcile A/R
-                                    </>
-                                )}
-                            </button>
-
-                            <button
-                                onClick={handleReconcileSuppliers}
-                                disabled={reconcilingSupplier}
-                                className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition flex items-center gap-2 disabled:bg-gray-400"
-                            >
-                                {reconcilingSupplier ? (
-                                    <>
-                                        <Loader2 className="w-5 h-5 animate-spin" />
-                                        Reconciling...
-                                    </>
-                                ) : (
-                                    <>
-                                        <TrendingDown className="w-5 h-5" />
-                                        Reconcile A/P
-                                    </>
-                                )}
-                            </button>
-
-                            <button
-                                onClick={handleReconcileAll}
-                                disabled={reconcilingCustomer || reconcilingSupplier}
-                                className="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition flex items-center gap-2 disabled:bg-gray-400"
-                            >
-                                <RefreshCw className="w-5 h-5" />
-                                Reconcile All
-                            </button>
-                        </div>
+                        <button
+                            onClick={handleReconcile}
+                            disabled={reconciling}
+                            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition flex items-center gap-2 disabled:bg-gray-400 font-medium"
+                        >
+                            {reconciling ? (
+                                <>
+                                    <Loader2 className="w-5 h-5 animate-spin" />
+                                    Reconciling...
+                                </>
+                            ) : (
+                                <>
+                                    <RefreshCw className="w-5 h-5" />
+                                    Reconcile
+                                </>
+                            )}
+                        </button>
                     </div>
                 </div>
             </div>

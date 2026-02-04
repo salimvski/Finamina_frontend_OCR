@@ -15,8 +15,8 @@ export default function TestingGuidePage() {
     <div className="min-h-screen bg-gray-50 p-8">
       <div className="max-w-4xl mx-auto">
         <div className="mb-6">
-          <Link href="/dashboard" className="text-blue-600 hover:text-blue-700 mb-4 inline-block">
-            ← Back to Dashboard
+          <Link href="/dashboard/admin" className="text-blue-600 hover:text-blue-700 mb-4 inline-block">
+            ← Back to Admin
           </Link>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Testing Guide</h1>
           <p className="text-gray-600">Step-by-step testing instructions for all features</p>

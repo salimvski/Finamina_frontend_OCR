@@ -129,10 +129,12 @@ export default function ContactsPage() {
     };
 
     const loadContacts = async (company_id: string) => {
+        // Customers table is a mirror of Wafeq: only show rows that have wafeq_id
         const { data, error } = await supabase
             .from('customers')
             .select('*')
             .eq('company_id', company_id)
+            .not('wafeq_id', 'is', null)
             .order('name', { ascending: true });
 
         if (data) {
@@ -195,9 +197,16 @@ export default function ContactsPage() {
             );
         }
 
-        // Type filter (using relationship field)
+        // Type filter (using relationship field; normalize to lowercase; "both" counts as customer and supplier)
         if (typeFilter !== 'all') {
-            filtered = filtered.filter(contact => contact.relationship === typeFilter);
+            const rel = (v: string | undefined) => (v || 'customer').toLowerCase();
+            filtered = filtered.filter(contact => {
+                const r = rel(contact.relationship);
+                if (typeFilter === 'supplier') return r === 'supplier' || r === 'both';
+                if (typeFilter === 'customer') return r === 'customer' || r === 'both';
+                if (typeFilter === 'both') return r === 'both';
+                return true;
+            });
         }
 
         setFilteredContacts(filtered);
@@ -496,7 +505,13 @@ export default function ContactsPage() {
             await loadContacts(companyId);
         } catch (err: any) {
             console.error('Error deleting contact:', err);
-            alert('Failed to delete contact: ' + err.message);
+            const msg = err?.message || '';
+            const isFk = msg.includes('foreign key') || msg.includes('violates foreign key') || err?.code === '23503';
+            alert(
+                isFk
+                    ? 'Cannot delete: this contact is linked to invoices or other records. Remove those links first, or delete the contact from Wafeq only (it will stay in Finamina).'
+                    : 'Failed to delete contact: ' + msg
+            );
         } finally {
             setDeletingContact(null);
         }
@@ -968,6 +983,9 @@ export default function ContactsPage() {
                                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                             placeholder="Optional"
                                         />
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            Optional. If provided: 15 digits, must start and end with 3 (e.g. 310123456700003).
+                                        </p>
                                     </div>
                                 </div>
                             </div>

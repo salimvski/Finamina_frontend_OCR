@@ -79,7 +79,10 @@ function CreateInvoicePageContent() {
   const [accounts, setAccounts] = useState<WafeqAccount[]>([]);
   const [taxRates, setTaxRates] = useState<WafeqTaxRate[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(false);
-  
+  const [showSyncContactModal, setShowSyncContactModal] = useState(false);
+  const [syncContactCustomer, setSyncContactCustomer] = useState<any | null>(null);
+  const [syncingContact, setSyncingContact] = useState(false);
+
   // Default account and tax rate for all invoices (fallback)
   const DEFAULT_ACCOUNT = 'acc_KEi3RuQTxLXvaCostgNDnq';
   const DEFAULT_TAX_RATE = 'tax_VhZKtotYoETzeWP6puoJ7g';
@@ -99,6 +102,24 @@ function CreateInvoicePageContent() {
       }
     }
   }, [searchParams, customerPOs]);
+
+  // Keep Customer PO link in sync: if a customer is selected and the linked PO belongs to another customer (by id or name), clear the link
+  useEffect(() => {
+    if (!formData.customer_id || !selectedCustomerPOId) return;
+    const linkedPO = customerPOs.find((cpo) => cpo.id === selectedCustomerPOId);
+    const selectedCustomer = customers.find((c) => c.id === formData.customer_id);
+    const custName = selectedCustomer ? (selectedCustomer.company_name || selectedCustomer.name || '').trim().toLowerCase() : '';
+    const poMatchesCustomer =
+      linkedPO &&
+      selectedCustomer &&
+      custName &&
+      (linkedPO.customer_id === formData.customer_id ||
+        (linkedPO.customers?.company_name || linkedPO.customers?.name || '').trim().toLowerCase() === custName);
+    if (linkedPO && !poMatchesCustomer) {
+      setSelectedCustomerPOId('');
+      setFormData((prev) => ({ ...prev, customer_po_reference: '' }));
+    }
+  }, [formData.customer_id, selectedCustomerPOId, customerPOs, customers]);
 
   const loadData = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -187,10 +208,12 @@ function CreateInvoicePageContent() {
   };
 
   const loadCustomers = async (company_id: string) => {
+    // Customers table is a mirror of Wafeq: only list customers that exist in Wafeq (have wafeq_id)
     const { data, error } = await supabase
       .from('customers')
       .select('id, name, company_name, email, wafeq_id')
       .eq('company_id', company_id)
+      .not('wafeq_id', 'is', null)
       .order('company_name', { ascending: true });
 
     if (data) {
@@ -204,12 +227,15 @@ function CreateInvoicePageContent() {
 
   const loadCustomerPOs = async (company_id: string) => {
     try {
-      const { data, error } = await supabase
+      // Try loading with extraction_data first, fall back if column doesn't exist
+      let query = supabase
         .from('customer_purchase_orders')
         .select('id, po_number, customer_id, po_date, amount, currency, customers(name, company_name)')
         .eq('company_id', company_id)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
+
+      const { data, error } = await query;
 
       if (error) {
         console.error('Error loading customer POs:', error);
@@ -232,7 +258,9 @@ function CreateInvoicePageContent() {
       // Prefill invoice data from customer PO
       setFormData(prev => ({
         ...prev,
-        customer_id: selectedCustomerPO.customer_id || prev.customer_id,
+        // Keep currently selected customer (don't change it when PO is selected)
+        // If no customer selected yet, use PO's customer_id
+        customer_id: prev.customer_id || selectedCustomerPO.customer_id || '',
         customer_po_reference: selectedCustomerPO.po_number,
         currency: selectedCustomerPO.currency || prev.currency,
         invoice_date: new Date().toISOString().split('T')[0],
@@ -249,12 +277,15 @@ function CreateInvoicePageContent() {
       const poAmount = parseFloat(selectedCustomerPO.amount || '0');
       const taxRateObj = taxRates.find(tr => tr.id === defaultTaxRate);
       const taxRatePercent = taxRateObj?.rate ? taxRateObj.rate / 100 : 0.15; // Default to 15%
-      const subtotal = poAmount / (1 + taxRatePercent);
-      const taxAmount = poAmount - subtotal;
+      // Round net price and tax to 2 decimals so UI shows clean values
+      const rawNet = poAmount / (1 + taxRatePercent);
+      const subtotal = parseFloat(rawNet.toFixed(2));
+      const taxAmount = parseFloat((poAmount - subtotal).toFixed(2));
 
+      const poRef = selectedCustomerPO.po_number || (selectedCustomerPO as any).reference || 'PO';
       setLineItems([{
-        item_name: `Products from ${selectedCustomerPO.po_number}`,
-        description: `Invoice for Customer PO ${selectedCustomerPO.po_number}`,
+        item_name: `Products from ${poRef}`,
+        description: `Invoice for Customer PO ${poRef}`,
         account: defaultAccount,
         quantity: 1,
         unit_price: subtotal,
@@ -480,6 +511,24 @@ function CreateInvoicePageContent() {
       return;
     }
 
+    // If a Customer PO is linked, it must belong to the selected customer (by id or company name)
+    if (selectedCustomerPOId) {
+      const linkedPO = customerPOs.find((cpo) => cpo.id === selectedCustomerPOId);
+      const selectedCustomer = customers.find((c) => c.id === formData.customer_id);
+      const custName = selectedCustomer ? (selectedCustomer.company_name || selectedCustomer.name || '').trim().toLowerCase() : '';
+      const poMatchesCustomer =
+        linkedPO &&
+        selectedCustomer &&
+        custName &&
+        (linkedPO.customer_id === formData.customer_id ||
+          (linkedPO.customers?.company_name || linkedPO.customers?.name || '').trim().toLowerCase() === custName);
+      if (linkedPO && !poMatchesCustomer) {
+        showToast('Selected Customer PO does not belong to the selected customer. Please link a PO for this customer or clear the link.', 'error');
+        setSubmitting(false);
+        return;
+      }
+    }
+
     // Additional validation: check each line item has description
     const hasEmptyDescriptions = lineItems.some(item => !item.description.trim());
     if (hasEmptyDescriptions) {
@@ -488,10 +537,40 @@ function CreateInvoicePageContent() {
       return;
     }
 
+    // Check if customer is synced with Wafeq; if not, show popup to create in Wafeq
+    const { data: customerCheck, error: customerCheckError } = await supabase
+      .from('customers')
+      .select('wafeq_id')
+      .eq('id', formData.customer_id)
+      .single();
+
+    if (customerCheckError) {
+      showToast(getErrorMessage(customerCheckError), 'error');
+      setSubmitting(false);
+      return;
+    }
+
+    if (!customerCheck?.wafeq_id) {
+      const { data: fullCustomer } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('id', formData.customer_id)
+        .single();
+      if (fullCustomer) {
+        setError('');
+        setSyncContactCustomer(fullCustomer);
+        setShowSyncContactModal(true);
+      } else {
+        showToast('Customer not found. Please select a customer from Contacts.', 'error');
+      }
+      setSubmitting(false);
+      return;
+    }
+
     // Use safeApiCall for all API operations
     const result = await safeApiCall(
       async () => {
-        // Step 1: Get customer's Wafeq ID
+        // Step 1: Get customer's Wafeq ID (already verified above)
         const { data: customerData, error: customerError } = await supabase
           .from('customers')
           .select('wafeq_id')
@@ -671,6 +750,57 @@ function CreateInvoicePageContent() {
     setSubmitting(false);
   };
 
+  const handleSyncContactToWafeq = async () => {
+    if (!syncContactCustomer || !companyId) return;
+    const email = (syncContactCustomer.email || '').trim();
+    const phone = (syncContactCustomer.phone || '').trim();
+    if (!email || !phone) {
+      showToast('This customer is missing email or phone. Add them in Contacts first, then try again.', 'error');
+      return;
+    }
+    setSyncingContact(true);
+    try {
+      const wafeqPayload = {
+        company_name: (syncContactCustomer.company_name || syncContactCustomer.name || '').trim(),
+        country: syncContactCustomer.country || 'Saudi Arabia',
+        tax_registration_number: (syncContactCustomer.tax_registration_number || syncContactCustomer.vat_number || '').trim() || undefined,
+        email,
+        phone,
+        relationship: 'customer',
+      };
+      const createRes = await fetch('/api/wafeq/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(wafeqPayload),
+      });
+      if (!createRes.ok) {
+        const errData = await createRes.json().catch(() => ({}));
+        throw new Error(errData.error || 'Failed to create contact in Wafeq');
+      }
+      const createResult = await createRes.json();
+      const wafeqId = createResult.wafeq_id;
+      if (!wafeqId) throw new Error('Wafeq did not return a contact ID');
+      const { error: updateErr } = await supabase
+        .from('customers')
+        .update({
+          wafeq_id: wafeqId,
+          wafeq_synced_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', syncContactCustomer.id);
+      if (updateErr) throw updateErr;
+      await loadCustomers(companyId);
+      setShowSyncContactModal(false);
+      setSyncContactCustomer(null);
+      showToast('Contact synced with Wafeq. Creating invoice...', 'success');
+      await handleSubmit({ preventDefault: () => {} } as React.FormEvent);
+    } catch (e: any) {
+      showToast(e?.message || 'Failed to sync contact with Wafeq', 'error');
+    } finally {
+      setSyncingContact(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen bg-gray-50">
@@ -692,6 +822,48 @@ function CreateInvoicePageContent() {
 
   return (
     <div className="min-h-screen bg-white">
+      {/* Modal: Create contact in Wafeq when not synced */}
+      {showSyncContactModal && syncContactCustomer && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Customer not synced with Wafeq</h3>
+            <p className="text-gray-600 text-sm mb-4">
+              &quot;{syncContactCustomer.company_name || syncContactCustomer.name}&quot; is not in Wafeq yet. Create them in Wafeq now so you can create this invoice?
+            </p>
+            {(!(syncContactCustomer.email || '').trim() || !(syncContactCustomer.phone || '').trim()) && (
+              <p className="text-amber-700 text-sm mb-4">
+                This customer is missing email or phone. Add them in <Link href="/dashboard/contacts" className="underline font-medium">Contacts</Link> first.
+              </p>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => { setShowSyncContactModal(false); setSyncContactCustomer(null); }}
+                className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+                disabled={syncingContact}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSyncContactToWafeq}
+                disabled={syncingContact || !(syncContactCustomer.email || '').trim() || !(syncContactCustomer.phone || '').trim()}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+              >
+                {syncingContact ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Creating in Wafeq…
+                  </>
+                ) : (
+                  'Create in Wafeq'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Header - Wafeq Style */}
       <div className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-6 py-4">
@@ -739,7 +911,27 @@ function CreateInvoicePageContent() {
                       </label>
                       <select
                         value={formData.customer_id}
-                        onChange={(e) => setFormData({ ...formData, customer_id: e.target.value })}
+                        onChange={(e) => {
+                          const newCustomerId = e.target.value;
+                          setFormData({ ...formData, customer_id: newCustomerId });
+                          // If user changes customer and the linked PO belongs to another customer (by id and by name), clear the link
+                          if (selectedCustomerPOId && newCustomerId) {
+                            const linkedPO = customerPOs.find((cpo) => cpo.id === selectedCustomerPOId);
+                            const newCustomer = customers.find((c) => c.id === newCustomerId);
+                            const custName = newCustomer ? (newCustomer.company_name || newCustomer.name || '').trim().toLowerCase() : '';
+                            const poMatchesNewCustomer =
+                              linkedPO &&
+                              newCustomer &&
+                              custName &&
+                              (linkedPO.customer_id === newCustomerId ||
+                                (linkedPO.customers?.company_name || linkedPO.customers?.name || '').trim().toLowerCase() === custName);
+                            if (linkedPO && !poMatchesNewCustomer) {
+                              setSelectedCustomerPOId('');
+                              setFormData((prev) => ({ ...prev, customer_po_reference: '' }));
+                              showToast('Customer changed; Customer PO link cleared (PO belongs to a different customer).', 'info');
+                            }
+                          }
+                        }}
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         required
                       >
@@ -820,10 +1012,24 @@ function CreateInvoicePageContent() {
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         Link to Customer PO
-                        <span className="ml-2 text-xs text-gray-500 font-normal">(Optional - Select to prefill)</span>
+                        <span className="ml-2 text-xs text-gray-500 font-normal">(Optional - only POs for selected customer)</span>
                       </label>
                       <select
-                        value={selectedCustomerPOId}
+                        value={
+                          (() => {
+                            if (!formData.customer_id || !selectedCustomerPOId) return selectedCustomerPOId;
+                            const selectedCustomer = customers.find((c) => c.id === formData.customer_id);
+                            const custName = selectedCustomer ? (selectedCustomer.company_name || selectedCustomer.name || '').trim().toLowerCase() : '';
+                            const isMatch = (cpo: any) => {
+                              if (cpo.id !== selectedCustomerPOId) return false;
+                              if (cpo.customer_id === formData.customer_id) return true;
+                              if (!selectedCustomer || !custName) return false;
+                              const poCustomerName = (cpo.customers?.company_name || cpo.customers?.name || '').trim().toLowerCase();
+                              return poCustomerName.length > 0 && poCustomerName === custName;
+                            };
+                            return customerPOs.some(isMatch) ? selectedCustomerPOId : '';
+                          })()
+                        }
                         onChange={(e) => {
                           if (e.target.value) {
                             handleCustomerPOSelection(e.target.value);
@@ -835,12 +1041,39 @@ function CreateInvoicePageContent() {
                         className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       >
                         <option value="">Select Customer PO (Optional)</option>
-                        {customerPOs.map((cpo) => (
+                        {(formData.customer_id
+                          ? customerPOs.filter((cpo) => {
+                              // Match by customer_id (PO linked to this customer)
+                              if (cpo.customer_id === formData.customer_id) return true;
+                              const selectedCustomer = customers.find((c) => c.id === formData.customer_id);
+                              if (!selectedCustomer) return false;
+                              const custName = (selectedCustomer.company_name || selectedCustomer.name || '').trim().toLowerCase();
+                              if (!custName) return false;
+                              // Match by PO's customer record name (handles n8n linking to different id or duplicate "Zamel logistics")
+                              const poCustomerName = (cpo.customers?.company_name || cpo.customers?.name || '').trim().toLowerCase();
+                              return poCustomerName.length > 0 && poCustomerName === custName;
+                            })
+                          : customerPOs
+                        ).map((cpo) => (
                           <option key={cpo.id} value={cpo.id}>
                             {cpo.po_number} - {cpo.currency} {parseFloat(cpo.amount || '0').toFixed(2)} ({cpo.customers?.company_name || cpo.customers?.name || 'N/A'})
                           </option>
                         ))}
                       </select>
+                      {formData.customer_id && (() => {
+                        const selectedCustomer = customers.find((c) => c.id === formData.customer_id);
+                        const custName = selectedCustomer ? (selectedCustomer.company_name || selectedCustomer.name || '').trim().toLowerCase() : '';
+                        const poMatchesCustomer = (cpo: any) => {
+                          if (cpo.customer_id === formData.customer_id) return true;
+                          if (!selectedCustomer || !custName) return false;
+                          const poCustomerName = (cpo.customers?.company_name || cpo.customers?.name || '').trim().toLowerCase();
+                          return poCustomerName.length > 0 && poCustomerName === custName;
+                        };
+                        const count = customerPOs.filter(poMatchesCustomer).length;
+                        return count === 0 ? (
+                          <p className="text-xs text-amber-600 mt-1">No pending POs for this customer. Select customer first, or upload a PO from Invoices.</p>
+                        ) : null;
+                      })()}
                     </div>
 
                     <div>
@@ -898,10 +1131,10 @@ function CreateInvoicePageContent() {
                         <tr className="border-b border-gray-200">
                           <th className="text-left py-3 px-2 text-sm font-semibold text-gray-700">Item Name</th>
                           <th className="text-left py-3 px-2 text-sm font-semibold text-gray-700">Description <span className="text-red-500">*</span></th>
-                          <th className="text-left py-3 px-2 text-sm font-semibold text-gray-700">Account <span className="text-red-500">*</span></th>
                           <th className="text-left py-3 px-2 text-sm font-semibold text-gray-700">Qty <span className="text-red-500">*</span></th>
                           <th className="text-left py-3 px-2 text-sm font-semibold text-gray-700">Price <span className="text-red-500">*</span></th>
                           <th className="text-left py-3 px-2 text-sm font-semibold text-gray-700">Line Amount</th>
+                          <th className="py-3 px-2" />
                         </tr>
                       </thead>
                       <tbody>
@@ -915,7 +1148,6 @@ function CreateInvoicePageContent() {
                                 className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                                 placeholder="Product/Service name"
                               />
-                              <a href="#" className="text-xs text-blue-600 hover:underline mt-1 block">+ Product or service</a>
                             </td>
                             <td className="py-3 px-2">
                               <input
@@ -926,39 +1158,6 @@ function CreateInvoicePageContent() {
                                 placeholder="Required"
                                 required
                               />
-                            </td>
-                            <td className="py-3 px-2">
-                              <select
-                                value={item.account}
-                                onChange={(e) => updateLineItem(index, 'account', e.target.value)}
-                                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm bg-white text-gray-900"
-                                required
-                                disabled={loadingOptions || accounts.length === 0}
-                              >
-                                <option value="" className="text-gray-500">{loadingOptions ? 'Loading...' : 'Select Account'}</option>
-                                {accounts.map((account) => {
-                                  // Show account type instead of ID
-                                  const accountType = account.type || account.account_type || 'Account';
-                                  const displayName = account.name || account.code || 'Unknown Account';
-                                  const displayCode = account.code || '';
-                                  
-                                  return (
-                                    <option key={account.id} value={account.id} className="text-gray-900">
-                                      {accountType}: {displayName} {displayCode ? `(${displayCode})` : ''}
-                                    </option>
-                                  );
-                                })}
-                              </select>
-                              {item.account && accounts.find(acc => acc.id === item.account) && (
-                                <div className="text-xs text-gray-500 mt-1">
-                                  {accounts.find(acc => acc.id === item.account)?.type || 
-                                   accounts.find(acc => acc.id === item.account)?.account_type ||
-                                   'Account'}: {accounts.find(acc => acc.id === item.account)?.name || 
-                                   accounts.find(acc => acc.id === item.account)?.code ||
-                                   'Selected'}
-                                </div>
-                              )}
-                              <a href="#" className="text-xs text-blue-600 hover:underline mt-1 block">+ Cost center</a>
                             </td>
                             <td className="py-3 px-2">
                               <input
@@ -982,25 +1181,11 @@ function CreateInvoicePageContent() {
                                 placeholder="Required"
                                 required
                               />
-                              <select
-                                value={item.tax_rate}
-                                onChange={(e) => updateLineItem(index, 'tax_rate', e.target.value)}
-                                className="w-full px-2 py-1 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm mt-1"
-                                disabled={loadingOptions}
-                              >
-                                <option value="">Select Tax Rate</option>
-                                {taxRates.map((taxRate) => (
-                                  <option key={taxRate.id} value={taxRate.id}>
-                                    {taxRate.name} {taxRate.rate ? `(${taxRate.rate}%)` : ''}
-                                  </option>
-                                ))}
-                              </select>
                             </td>
                             <td className="py-3 px-2">
                               <div className="text-sm font-medium text-gray-900">
                                 {currencySymbols[formData.currency] || formData.currency} {item.amount.toFixed(2)}
                               </div>
-                              <a href="#" className="text-xs text-blue-600 hover:underline mt-1 block">+ Discount</a>
                             </td>
                             <td className="py-3 px-2">
                               {lineItems.length > 1 && (

@@ -12,6 +12,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/lib/toast';
 import { validateFile } from '@/lib/validation';
 import { getErrorMessage, safeApiCall, fetchWithTimeout } from '@/lib/error-handling';
+import { getBackendBaseUrl } from '@/lib/backend-url';
 
 interface SupplierInvoice {
     id: string;
@@ -225,8 +226,9 @@ function SupplierInvoicesContent() {
             return;
         }
 
-        if (!process.env.NEXT_PUBLIC_N8N_URL) {
-            showToast('N8N server URL is not configured', 'error');
+        const baseUrl = getBackendBaseUrl();
+        if (!baseUrl) {
+            showToast('Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_N8N_URL.', 'error');
             return;
         }
 
@@ -239,7 +241,7 @@ function SupplierInvoicesContent() {
                 formData.append('company_id', companyId);
 
                 const response = await fetchWithTimeout(
-                    `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/upload-supplier-invoice`,
+                    `${baseUrl}/webhook/upload-supplier-invoice`,
                     {
                         method: 'POST',
                         body: formData
@@ -287,8 +289,13 @@ function SupplierInvoicesContent() {
     };
 
     const handleRun3WayMatch = async () => {
+        const baseUrl = getBackendBaseUrl();
+        if (!baseUrl) {
+            showToast('Backend URL is not configured.', 'error');
+            return;
+        }
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/run-three-way-match`, {
+            const response = await fetch(`${baseUrl}/webhook/run-three-way-match`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })

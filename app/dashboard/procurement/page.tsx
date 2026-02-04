@@ -12,6 +12,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useToast } from '@/lib/toast';
 import { validateFile } from '@/lib/validation';
 import { getErrorMessage, safeApiCall, fetchWithTimeout } from '@/lib/error-handling';
+import { getBackendBaseUrl } from '@/lib/backend-url';
 
 interface UploadModal {
     isOpen: boolean;
@@ -191,7 +192,12 @@ function ProcurementPageContent() {
 
         setMatching(true);
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/run-three-way-match`, {
+            const baseUrl = getBackendBaseUrl();
+            if (!baseUrl) {
+                alert('Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_N8N_URL.');
+                return;
+            }
+            const response = await fetch(`${baseUrl}/webhook/run-three-way-match`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ company_id: companyId })
@@ -253,8 +259,9 @@ function ProcurementPageContent() {
             return;
         }
 
-        if (!process.env.NEXT_PUBLIC_N8N_URL) {
-            showToast('N8N server URL is not configured', 'error');
+        const baseUrl = getBackendBaseUrl();
+        if (!baseUrl) {
+            showToast('Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_N8N_URL.', 'error');
             return;
         }
 
@@ -290,7 +297,7 @@ function ProcurementPageContent() {
                 }
 
                 const response = await fetchWithTimeout(
-                    `${process.env.NEXT_PUBLIC_N8N_URL}/webhook/${endpoint}`,
+                    `${baseUrl}/webhook/${endpoint}`,
                     {
                         method: 'POST',
                         body: formData

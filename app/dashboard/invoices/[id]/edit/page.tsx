@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import { ArrowLeft, Save, Loader2, Plus, Trash2, X, Shield, CreditCard, AlertCircle, CheckCircle, FileText } from 'lucide-react';
 import { useToast } from '@/lib/toast';
 import { safeApiCall } from '@/lib/error-handling';
+import { getBackendBaseUrl } from '@/lib/backend-url';
 import Link from 'next/link';
 
 interface LineItem {
@@ -377,11 +378,12 @@ export default function EditInvoicePage() {
 
     const result = await safeApiCall(
       async () => {
-        if (!process.env.NEXT_PUBLIC_N8N_URL) {
-          throw new Error('N8N server URL is not configured');
+        const baseUrl = getBackendBaseUrl();
+        if (!baseUrl) {
+          throw new Error('Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_N8N_URL.');
         }
 
-        const response = await fetch(`${process.env.NEXT_PUBLIC_N8N_URL}/webhook/ar-three-way-check`, {
+        const response = await fetch(`${baseUrl}/webhook/ar-three-way-check`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ invoice_id: invoice.id })

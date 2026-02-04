@@ -566,11 +566,8 @@ function InvoicesPageContent() {
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
-      
-      // Wait a bit more for database to be fully updated, then reload
-      setTimeout(async () => {
-        await loadDeliveryNotes(companyId);
-      }, 2000);
+      // Refetch from DB after backend OK so list shows new data
+      await loadDeliveryNotes(companyId);
     }
 
     setUploading(false);

@@ -303,14 +303,6 @@ function ProcurementPageContent() {
                     throw new Error(getErrorMessage({ status: response.status, message: errorText }));
                 }
 
-                setUploadModal(prev => ({
-                    ...prev,
-                    stage: 'saving',
-                    message: 'Saving to database...'
-                }));
-
-                await new Promise(resolve => setTimeout(resolve, 2000));
-
                 return { success: true };
             },
             { onError: (error) => {

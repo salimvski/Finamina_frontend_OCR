@@ -533,9 +533,7 @@ export default function CreatePurchaseOrderPage() {
                   <div className="col-span-12 md:col-span-12 flex justify-between items-center text-xs text-gray-500">
                     <span>
                       Line total:{' '}
-                      {(item.quantity || 0 * item.unitPrice || 0).toFixed
-                        ? (item.quantity * item.unitPrice).toFixed(2)
-                        : '0.00'}{' '}
+                      {((Number(item.quantity) || 0) * (Number(item.unitPrice) || 0)).toFixed(2)}{' '}
                       {currency}
                     </span>
                     <button

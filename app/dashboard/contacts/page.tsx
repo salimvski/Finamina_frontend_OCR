@@ -1072,15 +1072,15 @@ export default function ContactsPage() {
                                 )}
                             </div>
 
-                            {/* Invoicing Information (Optional) - Collapsible */}
+                            {/* Invoicing information - Required (email, phone) + Optional fields */}
                             <div className="border-b border-gray-200 pb-6">
                                 <button
                                     type="button"
                                     onClick={() => setExpandedSections({ ...expandedSections, invoicing: !expandedSections.invoicing })}
-                                    className="flex items-center justify-between w-full text-left mb-4"
+                                    className="flex items-center justify-between w-full text-left mb-2"
                                 >
                                     <h3 className="text-lg font-semibold text-gray-900">
-                                        Invoicing information <span className="text-gray-500 font-normal">Optional</span>
+                                        Invoicing information
                                     </h3>
                                     {expandedSections.invoicing ? (
                                         <ChevronUp className="w-5 h-5 text-gray-500" />
@@ -1088,18 +1088,11 @@ export default function ContactsPage() {
                                         <ChevronDown className="w-5 h-5 text-gray-500" />
                                     )}
                                 </button>
+                                <p className="text-sm text-gray-500 mb-4">
+                                    Email and phone are required for sending reminders. Other fields are optional.
+                                </p>
                                 {expandedSections.invoicing && (
                                     <div className="grid grid-cols-2 gap-6">
-                                        <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-2">Code</label>
-                                            <input
-                                                type="text"
-                                                value={formData.contact_code}
-                                                onChange={(e) => setFormData({ ...formData, contact_code: e.target.value })}
-                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                                placeholder="Optional"
-                                            />
-                                        </div>
                                         <div>
                                             <label className="block text-sm font-medium text-gray-700 mb-2">
                                                 Email <span className="text-red-500">*</span>
@@ -1109,7 +1102,7 @@ export default function ContactsPage() {
                                                 value={formData.email}
                                                 onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                                placeholder="Required"
+                                                placeholder="e.g. contact@company.com"
                                                 required
                                             />
                                         </div>
@@ -1122,12 +1115,26 @@ export default function ContactsPage() {
                                                 value={formData.phone}
                                                 onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                                                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                                placeholder="Required"
+                                                placeholder="e.g. +966 50 000 0000"
                                                 required
                                             />
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-2">Relationship</label>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Code <span className="text-gray-400 font-normal">(optional)</span>
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={formData.contact_code}
+                                                onChange={(e) => setFormData({ ...formData, contact_code: e.target.value })}
+                                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                                placeholder="Contact code"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Relationship <span className="text-gray-400 font-normal">(optional)</span>
+                                            </label>
                                             <select
                                                 value={formData.relationship}
                                                 onChange={(e) => setFormData({ ...formData, relationship: e.target.value as any })}
@@ -1140,7 +1147,9 @@ export default function ContactsPage() {
                                             </select>
                                         </div>
                                         <div>
-                                            <label className="block text-sm font-medium text-gray-700 mb-2">Payment terms</label>
+                                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                Payment terms <span className="text-gray-400 font-normal">(optional)</span>
+                                            </label>
                                             <select
                                                 value={formData.payment_terms}
                                                 onChange={(e) => setFormData({ ...formData, payment_terms: e.target.value })}
@@ -1155,7 +1164,9 @@ export default function ContactsPage() {
                                         </div>
                                         <div className="grid grid-cols-2 gap-4">
                                             <div>
-                                                <label className="block text-sm font-medium text-gray-700 mb-2">Contact ID Type</label>
+                                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                    Contact ID Type <span className="text-gray-400 font-normal">(optional)</span>
+                                                </label>
                                                 <select
                                                     value={formData.contact_id_type}
                                                     onChange={(e) => setFormData({ ...formData, contact_id_type: e.target.value })}
@@ -1168,7 +1179,9 @@ export default function ContactsPage() {
                                                 </select>
                                             </div>
                                             <div>
-                                                <label className="block text-sm font-medium text-gray-700 mb-2">ID Number</label>
+                                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                                    ID Number <span className="text-gray-400 font-normal">(optional)</span>
+                                                </label>
                                                 <input
                                                     type="text"
                                                     value={formData.id_number}

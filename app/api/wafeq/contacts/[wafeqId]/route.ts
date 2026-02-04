@@ -113,21 +113,18 @@ export async function PUT(
       );
     }
 
-    // Address fields - Build address object only if at least one field has a value
-    const addressFields: any = {};
-    if (contactData.city && contactData.city.trim()) addressFields.city = contactData.city.trim();
-    if (contactData.street_address && contactData.street_address.trim()) addressFields.street_address = contactData.street_address.trim();
-    if (contactData.building_number && contactData.building_number.trim()) addressFields.building_number = contactData.building_number.trim();
-    if (contactData.district && contactData.district.trim()) addressFields.district = contactData.district.trim();
-    if (contactData.address_additional_number && contactData.address_additional_number.trim()) {
-      addressFields.address_additional_number = contactData.address_additional_number.trim();
-    }
-    if (contactData.postal_code && contactData.postal_code.trim()) addressFields.postal_code = contactData.postal_code.trim();
-
-    // Only include address if it has at least one field
-    if (Object.keys(addressFields).length > 0) {
-      wafeqPayload.address = addressFields;
-    }
+    // Wafeq expects 'address' to be a non-empty string. Build one line from parts; use fallback if none.
+    const addressParts = [
+      contactData.street_address,
+      contactData.building_number,
+      contactData.district,
+      contactData.city,
+      contactData.postal_code,
+      contactData.address_additional_number,
+    ]
+      .map((s) => (s != null ? String(s).trim() : ''))
+      .filter((s) => s.length > 0);
+    wafeqPayload.address = addressParts.length > 0 ? addressParts.join(', ') : '—';
 
     // Invoicing information
     if (contactData.contact_code && contactData.contact_code.trim()) {

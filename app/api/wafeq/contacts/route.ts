@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getWafeqCountryCode } from '@/lib/wafeq-country';
 
 // Wafeq API base URL
 const WAFEQ_API_BASE = 'https://api.wafeq.com/v1';
@@ -62,24 +63,20 @@ export async function POST(request: NextRequest) {
       name: contactData.company_name, // Wafeq expects 'name', not 'company_name'
     };
 
-    // Country - Only include if provided
+    // Country - Wafeq expects a valid choice (ISO code), not free-text names like "Maroc"
     if (contactData.country && contactData.country.trim()) {
-      // Try to map common country names to codes
-      const countryMap: { [key: string]: string } = {
-        'Saudi Arabia': 'SA',
-        'United States': 'US',
-        'United Arab Emirates': 'AE',
-        'Kuwait': 'KW',
-        'Qatar': 'QA',
-        'Bahrain': 'BH',
-        'Oman': 'OM',
-        'Jordan': 'JO',
-        'Egypt': 'EG',
-        'Lebanon': 'LB'
-      };
-      
-      const countryValue = countryMap[contactData.country] || contactData.country;
-      wafeqPayload.country = countryValue;
+      const countryCode = getWafeqCountryCode(contactData.country);
+      if (countryCode) {
+        wafeqPayload.country = countryCode;
+      } else {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Country "${contactData.country.trim()}" is not supported. Use a supported name or 2-letter code (e.g. Saudi Arabia, Morocco, Maroc, MA, SA, UAE, AE).`,
+          },
+          { status: 400 }
+        );
+      }
     }
 
     // Tax registration number - Validate Saudi format (15 digits, start/end with 3) or omit

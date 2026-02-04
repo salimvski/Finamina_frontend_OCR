@@ -8,6 +8,7 @@ import {
     Building, FileText, Loader2, RefreshCw, CheckCircle, XCircle, ChevronUp, ChevronDown
 } from 'lucide-react';
 import Link from 'next/link';
+import { MENA_COUNTRIES, countryDropdownValue } from '@/lib/wafeq-country';
 
 interface Contact {
     id: string;
@@ -251,7 +252,7 @@ export default function ContactsPage() {
         setEditingContact(contact);
         setFormData({
             company_name: contact.company_name || contact.name || '',
-            country: contact.country || 'Saudi Arabia',
+            country: countryDropdownValue(contact.country) || '',
             tax_registration_number: contact.tax_registration_number || contact.vat_number || '',
             city: contact.city || '',
             street_address: contact.street_address || '',
@@ -318,7 +319,7 @@ export default function ContactsPage() {
             // Prepare Wafeq payload
             const wafeqPayload = {
                 company_name: formData.company_name.trim(),
-                country: formData.country.trim() || 'Saudi Arabia',
+                country: formData.country.trim() || null,
                 tax_registration_number: formData.tax_registration_number.trim() || null,
                 city: formData.city.trim() || null,
                 street_address: formData.street_address.trim() || null,
@@ -961,15 +962,21 @@ export default function ContactsPage() {
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-2">
-                                            Country
+                                            Country <span className="text-gray-400 font-normal">(optional)</span>
                                         </label>
-                                        <input
-                                            type="text"
-                                            value={formData.country}
+                                        <select
+                                            value={countryDropdownValue(formData.country) || ''}
                                             onChange={(e) => setFormData({ ...formData, country: e.target.value })}
                                             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                                            placeholder="Optional"
-                                        />
+                                        >
+                                            <option value="">Select country</option>
+                                            {MENA_COUNTRIES.map((c) => (
+                                                <option key={c.value} value={c.value}>{c.name}</option>
+                                            ))}
+                                        </select>
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            MENA region. Only sent to Wafeq when selected; not required by our form.
+                                        </p>
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-2">

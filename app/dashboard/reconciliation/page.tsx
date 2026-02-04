@@ -9,7 +9,6 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { getBackendBaseUrl } from '@/lib/backend-url';
 
 interface BankTransaction {
     id: string;
@@ -91,15 +90,9 @@ export default function ReconciliationPage() {
 
     const handleReconcile = async () => {
         if (!companyId) return;
-        const baseUrl = getBackendBaseUrl();
-        if (!baseUrl) {
-            alert('Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL.');
-            return;
-        }
-        const url = `${baseUrl}/webhook/lean-reconciliation?company_id=${encodeURIComponent(companyId)}`;
         setReconciling(true);
         try {
-            const response = await fetch(url, {
+            const response = await fetch(`/api/lean-reconciliation?company_id=${encodeURIComponent(companyId)}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
             });

@@ -391,8 +391,7 @@ export default function ContactsPage() {
                         default_expense_cost_center: fetchedContact.purchasing_defaults?.default_expense_cost_center || fetchedContact.default_expense_cost_center || formData.default_expense_cost_center,
                         default_expense_tax_rate: fetchedContact.purchasing_defaults?.default_expense_tax_rate || fetchedContact.default_expense_tax_rate || formData.default_expense_tax_rate,
                         wafeq_id: wafeqId,
-                        wafeq_synced_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString()
+                        wafeq_synced_at: new Date().toISOString()
                     })
                     .eq('id', editingContact.id);
 

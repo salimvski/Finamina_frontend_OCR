@@ -5,7 +5,6 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/lib/toast';
 import { validateFile } from '@/lib/validation';
-import { safeApiCall } from '@/lib/error-handling';
 import { ArrowLeft, Upload, FileText, Loader2, CheckCircle, X } from 'lucide-react';
 import Link from 'next/link';
 
@@ -25,6 +24,7 @@ export default function UploadCustomerPOPage() {
   const [companyId, setCompanyId] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadedPO, setUploadedPO] = useState<CustomerPO | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     loadCompanyId();
@@ -73,66 +73,69 @@ export default function UploadCustomerPOPage() {
       return;
     }
 
+    setUploadError(null);
     setUploading(true);
 
-    const result = await safeApiCall(
-      async () => {
-        const formData = new FormData();
-        formData.append('data', selectedFile);
-        formData.append('company_id', companyId);
+    const form = new FormData();
+    form.append('data', selectedFile);
+    form.append('company_id', companyId);
 
-        const response = await fetch('/upload-customer-po', {
-          method: 'POST',
-          body: formData
-        });
+    try {
+      const response = await fetch('/upload-customer-po', { method: 'POST', body: form });
+      const responseText = await response.text();
 
-        const responseText = await response.text();
-        console.log('Upload Customer PO: API response status:', response.status);
-        console.log('Upload Customer PO: API response body:', responseText.substring(0, 500));
-
-        if (!response.ok) {
-          let errorMessage = `Upload failed with status ${response.status}`;
-          try {
-            const errorJson = JSON.parse(responseText);
-            errorMessage = errorJson.error || errorJson.message || responseText || errorMessage;
-          } catch {
-            errorMessage = responseText || errorMessage;
-          }
-          throw new Error(errorMessage);
-        }
-
-        let responseData: any = { success: true };
+      if (response.ok) {
+        let data: any = {};
         try {
-          responseData = JSON.parse(responseText);
+          data = responseText ? JSON.parse(responseText) : {};
         } catch {
-          if (responseText.toLowerCase().includes('error') || 
-              responseText.toLowerCase().includes('failed') ||
-              responseText.toLowerCase().includes('duplicate')) {
-            throw new Error(responseText || 'Upload failed - API returned an error');
-          }
-          responseData = { success: true };
+          showToast('Invalid response from server', 'error');
+          setUploading(false);
+          return;
         }
-
-        if (responseData.error || !responseData.success) {
-          throw new Error(responseData.error || responseData.message || 'Upload failed');
+        const payload = data.data !== undefined ? data : { success: true, data };
+        if (payload.success === false && payload.error) {
+          showToast(payload.error || 'Upload failed', 'error');
+          setUploading(false);
+          return;
         }
+        const po = payload.data || payload;
+        setUploadedPO(po);
+        showToast('Customer PO uploaded successfully!', 'success');
+        setSelectedFile(null);
+        const fileInput = document.getElementById('file-input') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+        setUploading(false);
+        return;
+      }
 
-        return responseData.data || responseData;
-      },
-      { onError: (error) => showToast(error, 'error') }
-    );
+      if (response.status === 400) {
+        let detail = 'No matching customer found for this PO. Please create the customer first.';
+        try {
+          const err = responseText ? JSON.parse(responseText) : {};
+          if (typeof err.detail === 'string') detail = err.detail;
+          else if (err.detail) detail = String(err.detail);
+          else if (err.error) detail = err.error;
+        } catch {
+          if (responseText.trim()) detail = responseText.trim();
+        }
+        setUploadError(detail);
+        showToast(detail, 'error');
+        setUploading(false);
+        return;
+      }
 
-    if (result.success && result.data) {
-      setUploadedPO(result.data);
-      showToast('Customer PO uploaded successfully!', 'success');
-      setSelectedFile(null);
-      // Reset file input
-      const fileInput = document.getElementById('file-input') as HTMLInputElement;
-      if (fileInput) fileInput.value = '';
-    } else {
-      showToast(result.error || 'Failed to upload customer PO', 'error');
+      let errorMessage = `Upload failed (${response.status})`;
+      try {
+        const err = responseText ? JSON.parse(responseText) : {};
+        errorMessage = err.detail || err.error || err.message || errorMessage;
+      } catch {
+        if (responseText.trim()) errorMessage = responseText.trim();
+      }
+      showToast(errorMessage, 'error');
+    } catch (e: any) {
+      showToast(e?.message || 'Network or server error. Please try again.', 'error');
     }
-
     setUploading(false);
   };
 
@@ -214,6 +217,18 @@ export default function UploadCustomerPOPage() {
                 </div>
               )}
             </div>
+
+            {uploadError && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex flex-col gap-2">
+                <p className="text-sm text-amber-800">{uploadError}</p>
+                <Link
+                  href="/dashboard/contacts"
+                  className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                >
+                  Add customer in Contacts →
+                </Link>
+              </div>
+            )}
 
             {/* Upload Button */}
             <div className="flex gap-4">

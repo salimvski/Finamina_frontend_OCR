@@ -64,6 +64,7 @@ export default function EditInvoicePage() {
   const [accounts, setAccounts] = useState<WafeqAccount[]>([]);
   const [taxRates, setTaxRates] = useState<WafeqTaxRate[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   
   // Default account and tax rate (fallback)
   const DEFAULT_ACCOUNT = 'acc_KEi3RuQTxLXvaCostgNDnq';
@@ -183,6 +184,8 @@ export default function EditInvoicePage() {
   };
 
   const updateLineItem = (index: number, field: keyof LineItem, value: string | number) => {
+    // If invoice is backed by a Customer PO, keep line items read-only
+    if (invoice?.customer_po_id) return;
     const updated = [...lineItems];
     updated[index] = { ...updated[index], [field]: value };
     
@@ -209,6 +212,8 @@ export default function EditInvoicePage() {
   };
 
   const addLineItem = () => {
+    // If invoice is backed by a Customer PO, prevent adding new items
+    if (invoice?.customer_po_id) return;
     const defaultAccount = accounts.find(acc => acc.id === DEFAULT_ACCOUNT)?.id || accounts[0]?.id || '';
     const defaultTaxRate = taxRates.find(tr => tr.id === DEFAULT_TAX_RATE)?.id || taxRates[0]?.id || '';
     
@@ -225,6 +230,8 @@ export default function EditInvoicePage() {
   };
 
   const removeLineItem = (index: number) => {
+    // If invoice is backed by a Customer PO, prevent removing items
+    if (invoice?.customer_po_id) return;
     if (lineItems.length > 1) {
       setLineItems(lineItems.filter((_, i) => i !== index));
     }
@@ -257,6 +264,47 @@ export default function EditInvoicePage() {
 
     const total = subtotal + tax;
     return { subtotal, tax, total };
+  };
+
+  const handleDeleteInvoice = async () => {
+    if (!invoice) return;
+    if (!confirm('Delete this invoice? The linked PO will become available for invoicing again.')) {
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      const linkedCustomerPOId = invoice.customer_po_id;
+
+      const { error: deleteError } = await supabase
+        .from('invoices')
+        .delete()
+        .eq('id', invoiceId);
+
+      if (deleteError) {
+        throw deleteError;
+      }
+
+      // If this invoice was created from a Customer PO, revert PO status to approved
+      if (linkedCustomerPOId) {
+        const { error: poError } = await supabase
+          .from('customer_purchase_orders')
+          .update({ status: 'approved' })
+          .eq('id', linkedCustomerPOId);
+
+        if (poError) {
+          console.warn('Failed to revert Customer PO status after invoice delete:', poError);
+        }
+      }
+
+      showToast('Invoice deleted successfully', 'success');
+      router.push('/dashboard/invoices');
+    } catch (error: any) {
+      console.error('Error deleting invoice:', error);
+      showToast('Failed to delete invoice', 'error');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleSave = async (e: React.FormEvent) => {
@@ -920,14 +968,16 @@ export default function EditInvoicePage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold text-gray-900">Line Items</h2>
-              <button
-                type="button"
-                onClick={addLineItem}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
-              >
-                <Plus className="w-4 h-4" />
-                Add Line Item
-              </button>
+              {!invoice?.customer_po_id && (
+                <button
+                  type="button"
+                  onClick={addLineItem}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition text-sm font-medium"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Line Item
+                </button>
+              )}
             </div>
 
             <div className="overflow-x-auto">
@@ -955,6 +1005,7 @@ export default function EditInvoicePage() {
                           onChange={(e) => updateLineItem(index, 'item_name', e.target.value)}
                           placeholder="Product/Service"
                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
+                          readOnly={!!invoice?.customer_po_id}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -965,6 +1016,7 @@ export default function EditInvoicePage() {
                           placeholder="Description"
                           required
                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
+                          readOnly={!!invoice?.customer_po_id}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -973,7 +1025,7 @@ export default function EditInvoicePage() {
                           onChange={(e) => updateLineItem(index, 'account', e.target.value)}
                           required
                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
-                          disabled={loadingOptions}
+                          disabled={loadingOptions || !!invoice?.customer_po_id}
                         >
                           {accounts.map(acc => (
                             <option key={acc.id} value={acc.id}>
@@ -991,6 +1043,7 @@ export default function EditInvoicePage() {
                           onChange={(e) => updateLineItem(index, 'quantity', parseFloat(e.target.value) || 0)}
                           required
                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
+                          readOnly={!!invoice?.customer_po_id}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -1002,6 +1055,7 @@ export default function EditInvoicePage() {
                           onChange={(e) => updateLineItem(index, 'unit_price', parseFloat(e.target.value) || 0)}
                           required
                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
+                          readOnly={!!invoice?.customer_po_id}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -1010,7 +1064,7 @@ export default function EditInvoicePage() {
                           onChange={(e) => updateLineItem(index, 'tax_rate', e.target.value)}
                           required
                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
-                          disabled={loadingOptions || taxRates.length === 0}
+                          disabled={loadingOptions || taxRates.length === 0 || !!invoice?.customer_po_id}
                         >
                           {taxRates.length === 0 ? (
                             <option value="">{loadingOptions ? 'Loading...' : 'No tax rates available'}</option>
@@ -1031,6 +1085,7 @@ export default function EditInvoicePage() {
                           value={item.discount}
                           onChange={(e) => updateLineItem(index, 'discount', parseFloat(e.target.value) || 0)}
                           className="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:ring-1 focus:ring-blue-500"
+                          readOnly={!!invoice?.customer_po_id}
                         />
                       </td>
                       <td className="px-3 py-2">
@@ -1043,7 +1098,7 @@ export default function EditInvoicePage() {
                         />
                       </td>
                       <td className="px-3 py-2 text-center">
-                        {lineItems.length > 1 && (
+                        {lineItems.length > 1 && !invoice?.customer_po_id && (
                           <button
                             type="button"
                             onClick={() => removeLineItem(index)}
@@ -1105,6 +1160,15 @@ export default function EditInvoicePage() {
               className="px-6 py-3 border-2 border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold rounded-lg transition"
             >
               Cancel
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDeleteInvoice}
+              disabled={deleting}
+              className="px-6 py-3 border-2 border-red-500 text-red-600 hover:bg-red-50 font-semibold rounded-lg transition disabled:opacity-50"
+            >
+              {deleting ? 'Deleting…' : 'Delete Invoice'}
             </button>
           </div>
         </form>

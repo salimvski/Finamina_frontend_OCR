@@ -342,7 +342,7 @@ export default function DashboardHome() {
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
                     {/* Module 1: Sales & Invoices (A/R) */}
                     <Link 
-                        href="/dashboard/invoices"
+                        href="/dashboard/invoices?tab=invoices"
                         className="bg-white rounded-xl border-2 border-gray-200 hover:border-green-500 p-6 shadow-sm hover:shadow-lg transition group"
                     >
                         <div className="flex items-start justify-between mb-4">

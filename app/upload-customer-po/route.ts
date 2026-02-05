@@ -65,14 +65,16 @@ export async function POST(request: NextRequest) {
 
     if (!backendResponse.ok) {
       let errorMessage = `Upload failed with status ${backendResponse.status}`;
+      let detail: string | undefined;
       try {
-        const err = JSON.parse(responseText);
-        errorMessage = err.error || err.detail || err.message || errorMessage;
+        const err = responseText ? JSON.parse(responseText) : {};
+        detail = typeof err.detail === 'string' ? err.detail : undefined;
+        errorMessage = detail ?? err.error ?? err.message ?? errorMessage;
       } catch {
         if (responseText.trim()) errorMessage = responseText.trim();
       }
       return NextResponse.json(
-        { success: false, error: errorMessage },
+        { success: false, error: errorMessage, detail: detail ?? errorMessage },
         { status: backendResponse.status }
       );
     }

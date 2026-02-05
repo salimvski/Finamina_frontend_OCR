@@ -143,6 +143,9 @@ function InvoicesPageContent() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // PO upload: backend matches customer by VAT/name; 400 = no match (show detail + link to Contacts)
+  const [uploadPOError, setUploadPOError] = useState<string | null>(null);
+
   // Create DN form state
   const [dnFormData, setDnFormData] = useState({
     invoice_id: '',
@@ -170,6 +173,14 @@ function InvoicesPageContent() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // Open Invoices tab when arriving from dashboard "View Invoices" (?tab=invoices)
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (tab === 'invoices') {
+      setActiveTab('invoices');
+    }
+  }, [searchParams]);
 
   // Reload pending POs when page becomes visible (e.g., after creating an invoice)
   useEffect(() => {
@@ -314,9 +325,14 @@ function InvoicesPageContent() {
         };
       });
 
+      // Show POs that are pending or approved and do NOT yet have an invoice
+      const pendingForInvoicing = allPOsWithInfo.filter(
+        po => !po.hasInvoice && (po.status === 'pending' || po.status === 'approved' || !po.status)
+      );
+
       console.log('All POs with info:', allPOsWithInfo.length);
-      console.log('POs with invoices:', allPOsWithInfo.filter(po => po.hasInvoice).length);
-      setPendingPOs(allPOsWithInfo);
+      console.log('POs ready for invoicing:', pendingForInvoicing.length);
+      setPendingPOs(pendingForInvoicing);
     } catch (error) {
       console.error('Error in loadPendingPOs:', error);
       setPendingPOs([]);
@@ -876,8 +892,8 @@ function InvoicesPageContent() {
   };
 
   const handleGenerateInvoice = (po: PurchaseOrder) => {
-    // Navigate to create invoice page with PO pre-selected
-    router.push(`/dashboard/invoices/create?po_id=${po.id}`);
+    // Navigate to AR create-from-PO page (pre-filled, locked form)
+    router.push(`/dashboard/ar/invoices/create?po_id=${po.id}`);
   };
 
   const handleUploadPO = async () => {
@@ -895,60 +911,72 @@ function InvoicesPageContent() {
       return;
     }
 
+    setUploadPOError(null);
     setUploading(true);
-    const result = await safeApiCall(
-      async () => {
-        const formData = new FormData();
-        formData.append('data', selectedFile!);
-        formData.append('company_id', companyId);
 
-        const response = await fetchWithTimeout(
-          '/upload-customer-po',
-          { method: 'POST', body: formData },
-          120000
-        );
+    const form = new FormData();
+    form.append('data', selectedFile);
+    form.append('company_id', companyId);
 
-        const responseText = await response.text();
-        if (!response.ok) {
-          let errorMessage = `Upload failed with status ${response.status}`;
-          try {
-            const err = JSON.parse(responseText);
-            errorMessage = err.error || err.detail || err.message || errorMessage;
-          } catch {
-            if (responseText.trim()) errorMessage = responseText.trim();
-          }
-          throw new Error(errorMessage);
-        }
+    try {
+      const response = await fetchWithTimeout(
+        '/upload-customer-po',
+        { method: 'POST', body: form },
+        120000
+      );
+      const responseText = await response.text();
 
+      if (response.ok) {
         let data: any = {};
         try {
           data = responseText ? JSON.parse(responseText) : {};
         } catch {
-          throw new Error('Invalid response from server');
+          showToast('Invalid response from server', 'error');
+          setUploading(false);
+          return;
         }
-        if (data.success === false && data.error) {
-          throw new Error(data.error);
+        const payload = data.data !== undefined ? data : { success: true, data };
+        if (payload.success === false && payload.error) {
+          showToast(payload.error || 'Upload failed', 'error');
+          setUploading(false);
+          return;
         }
+        showToast('Customer PO uploaded successfully', 'success');
+        setShowUploadPOModal(false);
+        setSelectedFile(null);
+        setUploadPOError(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+        await loadPendingPOs(companyId);
+        setUploading(false);
+        return;
+      }
 
-        const poNumber = data.data?.po_number ?? data.po_number ?? null;
-        return { success: true, poNumber };
-      },
-      { onError: (error) => showToast(error, 'error') }
-    );
+      if (response.status === 400) {
+        let detail = 'No matching customer found for this PO. Please create the customer first.';
+        try {
+          const err = responseText ? JSON.parse(responseText) : {};
+          if (typeof err.detail === 'string') detail = err.detail;
+          else if (err.detail) detail = String(err.detail);
+          else if (err.error) detail = err.error;
+        } catch {
+          if (responseText.trim()) detail = responseText.trim();
+        }
+        setUploadPOError(detail);
+        showToast(detail, 'error');
+        setUploading(false);
+        return;
+      }
 
-    if (result.success) {
-      showToast(
-        result.data?.poNumber
-          ? `Customer PO uploaded successfully (${result.data.poNumber})`
-          : 'Customer PO uploaded successfully.',
-        'success'
-      );
-      setShowUploadPOModal(false);
-      setSelectedFile(null);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-      await loadPendingPOs(companyId);
-    } else if (result.error) {
-      showToast(result.error, 'error');
+      let errorMessage = `Upload failed (${response.status})`;
+      try {
+        const err = responseText ? JSON.parse(responseText) : {};
+        errorMessage = err.detail || err.error || err.message || errorMessage;
+      } catch {
+        if (responseText.trim()) errorMessage = responseText.trim();
+      }
+      showToast(errorMessage, 'error');
+    } catch (error: any) {
+      showToast(error?.message || 'Network or server error. Please try again.', 'error');
     }
     setUploading(false);
   };
@@ -1301,12 +1329,13 @@ function InvoicesPageContent() {
             filteredPOs.length === 0 ? (
               <div className="p-4 text-center text-gray-500 text-sm">
                 <Package className="w-8 h-8 mx-auto mb-2 text-gray-400" />
-                <p>No pending purchase orders</p>
-                <p className="text-xs mt-1 text-gray-400">Upload a PO to get started</p>
+                <p>No pending POs to invoice</p>
+                <p className="text-xs mt-1 text-gray-400">Upload and approve a PO to get started</p>
               </div>
             ) : (
               filteredPOs.map((po) => {
-                const customerName = po.customers?.company_name || po.customers?.name || 'Unknown';
+                const customerName = po.customers?.company_name || po.customers?.name ||
+                  (po.extraction_data?.customer_name || po.extraction_data?.buyer_name || po.extraction_data?.company_name || '').trim() || 'Unknown';
                 
                 return (
                   <div
@@ -1359,7 +1388,7 @@ function InvoicesPageContent() {
                             }}
                             className="px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition"
                           >
-                            Generate Invoice
+                            Create Invoice
                           </button>
                         )}
                       </div>
@@ -2008,7 +2037,7 @@ function InvoicesPageContent() {
         )}
       </div>
 
-      {/* Upload PO Modal */}
+      {/* Upload PO Modal: file + company_id; backend matches customer by VAT/name, returns 400 if no match */}
       {showUploadPOModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl shadow-2xl max-w-md w-full mx-4">
@@ -2019,6 +2048,8 @@ function InvoicesPageContent() {
                   onClick={() => {
                     setShowUploadPOModal(false);
                     setSelectedFile(null);
+                    setUploadPOError(null);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
                   }}
                   className="p-2 hover:bg-gray-100 rounded-lg transition"
                 >
@@ -2026,10 +2057,8 @@ function InvoicesPageContent() {
                 </button>
               </div>
 
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select Customer PO File (PDF/Image)
-                </label>
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">PO File (PDF/Image) *</label>
                 <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-500 transition cursor-pointer">
                   <input
                     ref={fileInputRef}
@@ -2057,13 +2086,28 @@ function InvoicesPageContent() {
                     )}
                   </label>
                 </div>
+                <p className="text-xs text-gray-500 mt-1">The backend will match the PO to an existing customer by VAT number or company name. If no customer matches, add the customer in Contacts first.</p>
               </div>
+
+              {uploadPOError && (
+                <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex flex-col gap-2">
+                  <p className="text-sm text-amber-800">{uploadPOError}</p>
+                  <Link
+                    href="/dashboard/contacts"
+                    className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                  >
+                    Add customer in Contacts →
+                  </Link>
+                </div>
+              )}
 
               <div className="flex gap-3">
                 <button
                   onClick={() => {
                     setShowUploadPOModal(false);
                     setSelectedFile(null);
+                    setUploadPOError(null);
+                    if (fileInputRef.current) fileInputRef.current.value = '';
                   }}
                   className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition font-medium"
                 >
@@ -2076,7 +2120,7 @@ function InvoicesPageContent() {
                 >
                   {uploading ? (
                     <>
-                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <Loader2 className="w-4 h-4 animate-spin" />
                       Uploading...
                     </>
                   ) : (

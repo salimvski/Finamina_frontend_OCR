@@ -229,11 +229,12 @@ function CreateInvoicePageContent() {
   const loadCustomerPOs = async (company_id: string) => {
     try {
       // Try loading with extraction_data first, fall back if column doesn't exist
+      // Load POs that can be invoiced: pending, approved, or no status set (exclude already invoiced)
       let query = supabase
         .from('customer_purchase_orders')
-        .select('id, po_number, customer_id, po_date, amount, currency, customers(name, company_name)')
+        .select('id, po_number, customer_id, po_date, amount, currency, status, customers(name, company_name)')
         .eq('company_id', company_id)
-        .eq('status', 'pending')
+        .or('status.eq.pending,status.eq.approved,status.is.null')
         .order('created_at', { ascending: false });
 
       const { data, error } = await query;
@@ -538,6 +539,28 @@ function CreateInvoicePageContent() {
       return;
     }
 
+    // Enforce: a Customer PO can only be invoiced once
+    if (selectedCustomerPOId) {
+      const { data: existingInvoice, error: existingError } = await supabase
+        .from('invoices')
+        .select('id')
+        .eq('company_id', companyId)
+        .eq('customer_po_id', selectedCustomerPOId)
+        .maybeSingle();
+
+      if (existingError) {
+        showToast(getErrorMessage(existingError), 'error');
+        setSubmitting(false);
+        return;
+      }
+
+      if (existingInvoice) {
+        showToast('This PO has already been invoiced', 'error');
+        setSubmitting(false);
+        return;
+      }
+    }
+
     // Check if customer is synced with Wafeq; if not, show popup to create in Wafeq
     const { data: customerCheck, error: customerCheckError } = await supabase
       .from('customers')
@@ -741,6 +764,18 @@ function CreateInvoicePageContent() {
     );
 
     if (result.success && result.data) {
+      // If linked to a Customer PO, mark that PO as invoiced
+      if (selectedCustomerPOId) {
+        const { error: poUpdateError } = await supabase
+          .from('customer_purchase_orders')
+          .update({ status: 'invoiced' })
+          .eq('id', selectedCustomerPOId);
+
+        if (poUpdateError) {
+          console.warn('Failed to update Customer PO status to invoiced:', poUpdateError);
+        }
+      }
+
       showToast('Invoice created successfully!', 'success');
       // Step 4: Redirect to invoices list page (invoices tab)
       router.push(`/dashboard/invoices?id=${result.data.id}`);

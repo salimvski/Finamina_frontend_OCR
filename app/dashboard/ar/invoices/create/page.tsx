@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { useToast } from '@/lib/toast';
@@ -21,7 +21,7 @@ function addDays(date: Date, days: number): string {
   return d.toISOString().split('T')[0];
 }
 
-export default function ARCreateInvoiceFromPOPage() {
+function ARCreateInvoiceFromPOPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -489,5 +489,22 @@ export default function ARCreateInvoiceFromPOPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ARCreateInvoiceFromPOPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center bg-gray-50">
+          <div className="text-center">
+            <Loader2 className="w-12 h-12 animate-spin text-blue-600 mx-auto mb-4" />
+            <p className="text-gray-600">Loading...</p>
+          </div>
+        </div>
+      }
+    >
+      <ARCreateInvoiceFromPOPageContent />
+    </Suspense>
   );
 }

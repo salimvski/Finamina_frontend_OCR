@@ -100,6 +100,12 @@ interface PurchaseOrder {
   customer_id?: string;
   notes?: string;
   expected_delivery_date?: string;
+  extraction_data?: {
+    customer_name?: string;
+    buyer_name?: string;
+    company_name?: string;
+    [key: string]: unknown;
+  };
   customers?: {
     id: string;
     name: string;

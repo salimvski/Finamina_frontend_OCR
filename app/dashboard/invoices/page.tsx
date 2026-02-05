@@ -2051,7 +2051,7 @@ function InvoicesPageContent() {
                     ) : (
                       <div className="space-y-2">
                         <CloudUpload className="w-12 h-12 text-gray-400 mx-auto" />
-                        <p className="text-sm font-medium text-gray-900">Click to upload or drag and drop</p>
+                        <p className="text-sm font-medium text-gray-900">Click to upload a file</p>
                         <p className="text-xs text-gray-500">PDF, PNG, JPG (MAX. 10MB)</p>
                       </div>
                     )}
@@ -2134,7 +2134,7 @@ function InvoicesPageContent() {
                     ) : (
                       <div className="space-y-2">
                         <CloudUpload className="w-12 h-12 text-gray-400 mx-auto" />
-                        <p className="text-sm font-medium text-gray-900">Click to upload or drag and drop</p>
+                        <p className="text-sm font-medium text-gray-900">Click to upload a file</p>
                         <p className="text-xs text-gray-500">PDF, PNG, JPG (MAX. 10MB)</p>
                       </div>
                     )}
@@ -2467,7 +2467,7 @@ function InvoicesPageContent() {
                     ) : (
                       <div className="space-y-2">
                         <CloudUpload className="w-12 h-12 text-gray-400 mx-auto" />
-                        <p className="text-sm font-medium text-gray-900">Click to upload or drag and drop</p>
+                        <p className="text-sm font-medium text-gray-900">Click to upload a file</p>
                         <p className="text-xs text-gray-500">PDF, PNG, JPG (MAX. 10MB)</p>
                       </div>
                     )}

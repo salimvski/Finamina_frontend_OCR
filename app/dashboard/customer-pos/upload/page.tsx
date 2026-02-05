@@ -171,7 +171,7 @@ export default function UploadCustomerPOPage() {
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Select File <span className="text-red-500">*</span>
               </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-blue-400 transition">
+              <div className="border border-gray-300 rounded-lg p-8 text-center hover:border-blue-400 transition">
                 <input
                   id="file-input"
                   type="file"
@@ -185,7 +185,7 @@ export default function UploadCustomerPOPage() {
                 >
                   <Upload className="w-12 h-12 text-gray-400 mb-4" />
                   <p className="text-sm text-gray-600 mb-2">
-                    Click to upload or drag and drop
+                    Click to upload a file
                   </p>
                   <p className="text-xs text-gray-500">
                     PDF, JPG, PNG (max 10MB)

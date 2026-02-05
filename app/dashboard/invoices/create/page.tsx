@@ -214,6 +214,7 @@ function CreateInvoicePageContent() {
       .select('id, name, company_name, email, wafeq_id')
       .eq('company_id', company_id)
       .not('wafeq_id', 'is', null)
+      .is('deleted_at', null)
       .order('company_name', { ascending: true });
 
     if (data) {

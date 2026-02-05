@@ -8,6 +8,7 @@ import {
     Building, FileText, Loader2, RefreshCw, CheckCircle, XCircle, ChevronUp, ChevronDown
 } from 'lucide-react';
 import Link from 'next/link';
+import { useToast } from '@/lib/toast';
 import { MENA_COUNTRIES, countryDropdownValue } from '@/lib/wafeq-country';
 
 interface Contact {
@@ -53,6 +54,7 @@ export default function ContactsPage() {
     const router = useRouter();
     const [loading, setLoading] = useState(true);
     const [syncing, setSyncing] = useState(false);
+    const { showToast } = useToast();
     const [companyId, setCompanyId] = useState('');
     const [contacts, setContacts] = useState<Contact[]>([]);
     const [filteredContacts, setFilteredContacts] = useState<Contact[]>([]);
@@ -130,12 +132,13 @@ export default function ContactsPage() {
     };
 
     const loadContacts = async (company_id: string) => {
-        // Customers table is a mirror of Wafeq: only show rows that have wafeq_id
+        // Show contacts that have wafeq_id and are not soft-deleted
         const { data, error } = await supabase
             .from('customers')
             .select('*')
             .eq('company_id', company_id)
             .not('wafeq_id', 'is', null)
+            .is('deleted_at', null)
             .order('name', { ascending: true });
 
         if (data) {
@@ -421,11 +424,12 @@ export default function ContactsPage() {
                 // Map Wafeq response (uses 'name') to our format (uses 'company_name')
                 const companyName = fetchedContact.name || fetchedContact.company_name || formData.company_name;
 
-                // Save to Supabase with data from Wafeq
+                // Save to Supabase with data from Wafeq (source = wafeq so sync can soft-delete if removed in Wafeq)
                 const { data, error } = await supabase
                     .from('customers')
                     .insert({
                         company_id: companyId,
+                        source: 'wafeq',
                         company_name: companyName,
                         name: companyName, // Legacy field
                         country: fetchedContact.country || formData.country || 'Saudi Arabia',
@@ -518,155 +522,140 @@ export default function ContactsPage() {
     };
 
 
+    const mapWafeqToContactData = (wafeqContact: any) => {
+        const companyName = wafeqContact.name || wafeqContact.company_name;
+        let relationshipValue = 'customer';
+        if (Array.isArray(wafeqContact.relationship)) {
+            if (wafeqContact.relationship.length > 1 ||
+                (wafeqContact.relationship.includes('customer') && wafeqContact.relationship.includes('supplier'))) {
+                relationshipValue = 'both';
+            } else {
+                relationshipValue = wafeqContact.relationship[0] || 'customer';
+            }
+        } else if (wafeqContact.relationship) {
+            relationshipValue = wafeqContact.relationship;
+        }
+        return {
+            company_id: companyId,
+            source: 'wafeq' as const,
+            company_name: companyName,
+            name: companyName,
+            country: wafeqContact.country || 'Saudi Arabia',
+            tax_registration_number: wafeqContact.tax_registration_number || null,
+            vat_number: wafeqContact.tax_registration_number || null,
+            city: wafeqContact.address?.city || null,
+            street_address: wafeqContact.address?.street_address || null,
+            building_number: wafeqContact.address?.building_number || null,
+            district: wafeqContact.address?.district || null,
+            address_additional_number: wafeqContact.address?.address_additional_number || null,
+            postal_code: wafeqContact.address?.postal_code || null,
+            contact_code: wafeqContact.code || null,
+            email: wafeqContact.email || null,
+            phone: wafeqContact.phone || null,
+            relationship: relationshipValue,
+            payment_terms: wafeqContact.payment_terms || null,
+            contact_id_type: wafeqContact.contact_id_type || null,
+            id_number: wafeqContact.id_number || null,
+            default_revenue_account: wafeqContact.selling_defaults?.default_revenue_account || null,
+            default_revenue_cost_center: wafeqContact.selling_defaults?.default_revenue_cost_center || null,
+            default_revenue_tax_rate: wafeqContact.selling_defaults?.default_revenue_tax_rate || null,
+            default_expense_account: wafeqContact.purchasing_defaults?.default_expense_account || null,
+            default_expense_cost_center: wafeqContact.purchasing_defaults?.default_expense_cost_center || null,
+            default_expense_tax_rate: wafeqContact.purchasing_defaults?.default_expense_tax_rate || null,
+            wafeq_id: wafeqContact.id,
+            wafeq_synced_at: new Date().toISOString()
+        };
+    };
+
     const handleSyncAll = async () => {
-        if (!confirm('Sync all contacts with Wafeq? This may take a while.')) {
-            return;
-        }
-
         if (!companyId) {
-            alert('Company ID is missing. Please refresh the page.');
+            showToast('Company ID is missing. Please refresh the page.', 'error');
             return;
         }
-
         setSyncing(true);
         try {
-            // Fetch all contacts from Wafeq via our API route
             const wafeqResponse = await fetch('/api/wafeq/contacts');
-            
             if (!wafeqResponse.ok) {
                 const errorData = await wafeqResponse.json();
                 throw new Error(errorData.error || 'Failed to fetch contacts from Wafeq');
             }
-
             const wafeqData = await wafeqResponse.json();
-            // Wafeq API returns contacts in a results array or directly as array
-            const wafeqContacts = wafeqData.contacts || wafeqData.results || [];
-
+            const wafeqContacts: any[] = wafeqData.contacts || wafeqData.results || [];
             if (!Array.isArray(wafeqContacts)) {
                 throw new Error('Invalid response format from Wafeq');
             }
 
-            // Sync each contact (Wafeq is source of truth)
-            let synced = 0;
-            let errors = 0;
-            
+            // Include soft-deleted so we can restore if contact reappears in Wafeq
+            const { data: finaminaRows, error: fetchError } = await supabase
+                .from('customers')
+                .select('id, wafeq_id, deleted_at')
+                .eq('company_id', companyId)
+                .eq('source', 'wafeq');
+
+            if (fetchError) throw fetchError;
+
+            const finaminaContacts = finaminaRows || [];
+            const wafeqIdSet = new Set(wafeqContacts.map((c: any) => c.id));
+            const finaminaByWafeqId = new Map(finaminaContacts.map((r: { id: string; wafeq_id: string | null }) => [r.wafeq_id ?? '', r]));
+
+            const toInsert: any[] = [];
+            const toUpdate: { id: string; data: any }[] = [];
+            const toDeleteIds: string[] = [];
+
             for (const wafeqContact of wafeqContacts) {
-                try {
-                    // Check if contact exists in Supabase by wafeq_id
-                    const { data: existing } = await supabase
-                        .from('customers')
-                        .select('id')
-                        .eq('wafeq_id', wafeqContact.id)
-                        .eq('company_id', companyId)
-                        .single();
-
-                    // Map Wafeq response to our format
-                    // Wafeq uses 'name', we use 'company_name'
-                    const companyName = wafeqContact.name || wafeqContact.company_name;
-                    
-                    // Handle relationship - Wafeq returns array, we store as string
-                    let relationshipValue = 'customer';
-                    if (Array.isArray(wafeqContact.relationship)) {
-                        if (wafeqContact.relationship.length > 1 || 
-                            (wafeqContact.relationship.includes('customer') && wafeqContact.relationship.includes('supplier'))) {
-                            relationshipValue = 'both';
-                        } else {
-                            relationshipValue = wafeqContact.relationship[0] || 'customer';
-                        }
-                    } else if (wafeqContact.relationship) {
-                        relationshipValue = wafeqContact.relationship;
-                    }
-
-                    const contactData = {
-                        company_id: companyId,
-                        company_name: companyName,
-                        name: companyName, // Legacy field
-                        country: wafeqContact.country || 'Saudi Arabia',
-                        tax_registration_number: wafeqContact.tax_registration_number || null,
-                        vat_number: wafeqContact.tax_registration_number || null, // Legacy
-                        city: wafeqContact.address?.city || null,
-                        street_address: wafeqContact.address?.street_address || null,
-                        building_number: wafeqContact.address?.building_number || null,
-                        district: wafeqContact.address?.district || null,
-                        address_additional_number: wafeqContact.address?.address_additional_number || null,
-                        postal_code: wafeqContact.address?.postal_code || null,
-                        contact_code: wafeqContact.code || null,
-                        email: wafeqContact.email || null,
-                        phone: wafeqContact.phone || null,
-                        relationship: relationshipValue,
-                        payment_terms: wafeqContact.payment_terms || null,
-                        contact_id_type: wafeqContact.contact_id_type || null,
-                        id_number: wafeqContact.id_number || null,
-                        default_revenue_account: wafeqContact.selling_defaults?.default_revenue_account || null,
-                        default_revenue_cost_center: wafeqContact.selling_defaults?.default_revenue_cost_center || null,
-                        default_revenue_tax_rate: wafeqContact.selling_defaults?.default_revenue_tax_rate || null,
-                        default_expense_account: wafeqContact.purchasing_defaults?.default_expense_account || null,
-                        default_expense_cost_center: wafeqContact.purchasing_defaults?.default_expense_cost_center || null,
-                        default_expense_tax_rate: wafeqContact.purchasing_defaults?.default_expense_tax_rate || null,
-                        wafeq_id: wafeqContact.id,
-                        wafeq_synced_at: new Date().toISOString()
-                    };
-
-                    if (existing) {
-                        // Update existing row (Wafeq is source of truth)
-                        const { error } = await supabase
-                            .from('customers')
-                            .update(contactData)
-                            .eq('id', existing.id);
-
-                        if (error) {
-                            console.error(
-                                `Error updating contact ${wafeqContact.id}:`,
-                                error?.message || error
-                            );
-                            errors++;
-                            continue;
-                        }
-                    } else {
-                        // Try create new; if unique constraint, treat as already-synced and move on
-                        const { error } = await supabase
-                            .from('customers')
-                            .insert(contactData);
-
-                        if (error) {
-                            // 23505 = unique_violation in Postgres
-                            if (error.code === '23505') {
-                                console.warn(
-                                    `Duplicate contact ${wafeqContact.id} (likely same VAT or name), skipping insert and treating as already synced. Details:`,
-                                    error?.message || error
-                                );
-                                // Do not count as hard error; continue with next contact
-                            } else {
-                                console.error(
-                                    `Error creating contact ${wafeqContact.id}:`,
-                                    error?.message || error
-                                );
-                                errors++;
-                                continue;
-                            }
-                        }
-                    }
-                    synced++;
-                } catch (err: any) {
-                    console.error(
-                        `Error syncing contact ${wafeqContact.id}:`,
-                        err?.message || err
-                    );
-                    errors++;
+                const existing = finaminaByWafeqId.get(wafeqContact.id);
+                const contactData = mapWafeqToContactData(wafeqContact);
+                if (!existing) {
+                    toInsert.push(contactData);
+                } else {
+                    // Restore if was soft-deleted by setting deleted_at to null
+                    toUpdate.push({ id: existing.id, data: { ...contactData, deleted_at: null } });
+                }
+            }
+            for (const row of finaminaContacts) {
+                if (row.wafeq_id && !wafeqIdSet.has(row.wafeq_id) && row.deleted_at == null) {
+                    toDeleteIds.push(row.id);
                 }
             }
 
-            if (synced > 0) {
-                alert(`Successfully synced ${synced} contact${synced > 1 ? 's' : ''} from Wafeq!${errors > 0 ? ` (${errors} failed)` : ''}`);
-            } else if (errors > 0) {
-                alert(`Failed to sync contacts. ${errors} error${errors > 1 ? 's' : ''} occurred.`);
-            } else {
-                alert('No contacts found in Wafeq to sync.');
+            let added = 0;
+            let updated = 0;
+            let deleted = 0;
+
+            for (const payload of toInsert) {
+                const { error } = await supabase.from('customers').insert(payload);
+                if (!error) added++;
+                else if (error.code !== '23505') {
+                    console.error('Sync insert error:', error?.message);
+                    throw error;
+                }
             }
+            for (const { id, data } of toUpdate) {
+                const { error } = await supabase.from('customers').update(data).eq('id', id);
+                if (!error) updated++;
+                else {
+                    console.error('Sync update error:', error?.message);
+                    throw error;
+                }
+            }
+            if (toDeleteIds.length > 0) {
+                const { error } = await supabase
+                    .from('customers')
+                    .update({ deleted_at: new Date().toISOString() })
+                    .in('id', toDeleteIds)
+                    .eq('source', 'wafeq');
+                if (!error) deleted = toDeleteIds.length;
+                else {
+                    console.error('Sync soft-delete error:', error?.message);
+                    throw error;
+                }
+            }
+
+            showToast('✓ Contacts synced successfully', 'success');
             await loadContacts(companyId);
         } catch (err: any) {
             console.error('Error syncing all contacts:', err);
-            alert(`Error syncing contacts with Wafeq: ${err.message || 'Network error'}`);
+            showToast('Sync failed. Please try again', 'error');
         } finally {
             setSyncing(false);
         }
@@ -696,6 +685,9 @@ export default function ContactsPage() {
                             <div>
                                 <h1 className="text-3xl font-bold text-gray-900">Contacts</h1>
                                 <p className="text-gray-600 mt-1">Manage your contacts and sync with Wafeq</p>
+                                <p className="text-sm text-gray-500 mt-1">
+                                    {filteredContacts.length} contact{filteredContacts.length === 1 ? '' : 's'}
+                                </p>
                             </div>
                         </div>
                         <div className="flex items-center gap-3">
@@ -712,7 +704,7 @@ export default function ContactsPage() {
                                 ) : (
                                     <>
                                         <RefreshCw className="w-4 h-4" />
-                                        Sync All with Wafeq
+                                        Sync from Wafeq
                                     </>
                                 )}
                             </button>

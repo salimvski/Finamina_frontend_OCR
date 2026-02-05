@@ -69,6 +69,7 @@ export default function CreatePurchaseOrderPage() {
       .from('customers')
       .select('id, company_name, name, vat_number, tax_registration_number, relationship')
       .eq('company_id', company_id)
+      .is('deleted_at', null)
       .order('company_name', { ascending: true });
 
     if (error) {
@@ -184,6 +185,7 @@ export default function CreatePurchaseOrderPage() {
         .select(
           'id, company_name, name, email, phone, vat_number, tax_registration_number, city'
         )
+        .is('deleted_at', null)
         .eq('company_id', companyId)
         .eq('id', supplierId)
         .single();

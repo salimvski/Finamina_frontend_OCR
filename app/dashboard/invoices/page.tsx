@@ -291,7 +291,8 @@ function InvoicesPageContent() {
       const { data: customers } = await supabase
         .from('customers')
         .select('id, name, company_name')
-        .eq('company_id', company_id);
+        .eq('company_id', company_id)
+        .is('deleted_at', null);
 
       const customerMap = new Map((customers || []).map((c: any) => [c.id, c]));
 
@@ -390,7 +391,8 @@ function InvoicesPageContent() {
         const { data: customers } = await supabase
           .from('customers')
           .select('id, name, company_name')
-          .in('id', customerIds);
+          .in('id', customerIds)
+          .is('deleted_at', null);
         
         if (customers) {
           customers.forEach((c: any) => customersMap.set(c.id, c));
@@ -582,6 +584,7 @@ function InvoicesPageContent() {
         .from('customers')
         .select('id, name, company_name')
         .eq('company_id', companyId)
+        .is('deleted_at', null)
         .order('company_name', { ascending: true });
 
       setAvailableCustomers(customers || []);

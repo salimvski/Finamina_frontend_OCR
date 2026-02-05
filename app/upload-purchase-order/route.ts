@@ -37,13 +37,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: fileValidation.error }, { status: 400 });
     }
 
-    if (!process.env.NEXT_PUBLIC_N8N_URL) {
-      console.error('Upload PO: NEXT_PUBLIC_N8N_URL not configured');
-      return NextResponse.json({ success: false, error: 'N8N server URL is not configured' }, { status: 500 });
+    const backendBase = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_N8N_URL || '').trim();
+    if (!backendBase) {
+      console.error('Upload PO: NEXT_PUBLIC_BACKEND_URL / NEXT_PUBLIC_N8N_URL not configured');
+      return NextResponse.json({ success: false, error: 'Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_N8N_URL in .env.local and restart the dev server.' }, { status: 500 });
     }
-    
     // Force HTTP for server-side calls (server can call HTTP even if env var is HTTPS)
-    let baseUrl = process.env.NEXT_PUBLIC_N8N_URL.trim();
+    let baseUrl = backendBase;
     if (baseUrl.startsWith('https://')) {
       baseUrl = baseUrl.replace('https://', 'http://');
     } else if (!baseUrl.startsWith('http://')) {

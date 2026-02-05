@@ -36,14 +36,15 @@ export async function POST(request: NextRequest) {
     n8nFormData.append('company_id', company_id);
     n8nFormData.append('context', context);
 
-    if (!process.env.NEXT_PUBLIC_N8N_URL) {
+    const backendBase = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_N8N_URL || '').trim();
+    if (!backendBase) {
       return NextResponse.json(
-        { success: false, error: 'N8N server URL is not configured' },
+        { success: false, error: 'Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_N8N_URL in .env.local and restart the dev server.' },
         { status: 500 }
       );
     }
     // Force HTTP for server-side calls (server can call HTTP even if env var is HTTPS)
-    const baseUrl = process.env.NEXT_PUBLIC_N8N_URL.replace(/^https:\/\//, 'http://');
+    const baseUrl = backendBase.replace(/^https:\/\//, 'http://').replace(/\/$/, '');
     const n8nUrl = `${baseUrl}/webhook/upload-delivery-note`;
 
     console.log('Calling n8n webhook:', n8nUrl);

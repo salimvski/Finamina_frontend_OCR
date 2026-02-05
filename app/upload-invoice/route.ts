@@ -20,11 +20,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: false, error: 'File is required' }, { status: 400 });
     }
 
-    if (!process.env.NEXT_PUBLIC_N8N_URL) {
-      return NextResponse.json({ success: false, error: 'N8N server URL is not configured' }, { status: 500 });
+    const backendBase = (process.env.NEXT_PUBLIC_BACKEND_URL || process.env.NEXT_PUBLIC_N8N_URL || '').trim();
+    if (!backendBase) {
+      return NextResponse.json({ success: false, error: 'Backend URL is not configured. Set NEXT_PUBLIC_BACKEND_URL or NEXT_PUBLIC_N8N_URL in .env.local and restart the dev server.' }, { status: 500 });
     }
     // Force HTTP for server-side calls (server can call HTTP even if env var is HTTPS)
-    const baseUrl = process.env.NEXT_PUBLIC_N8N_URL.replace(/^https:\/\//, 'http://');
+    const baseUrl = backendBase.replace(/^https:\/\//, 'http://').replace(/\/$/, '');
     const n8nUrl = `${baseUrl}/webhook/upload-invoice`;
 
     const n8nFormData = new FormData();
